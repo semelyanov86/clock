@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,12 +37,13 @@ const DefaultAPIURL = "https://tradernet.com/api"
 
 // Client is a session-authenticated Freedom24 client.
 type Client struct {
-	login    string
-	password string
-	userID   string
-	baseURL  string
-	httpc    *http.Client
-	log      *slog.Logger
+	login     string
+	password  string
+	userID    string
+	baseURL   string
+	httpc     *http.Client
+	log       *slog.Logger
+	logBodies bool
 
 	authMu sync.Mutex // serialises authByLogin so concurrent fetchers issue one login
 	mu     sync.Mutex
@@ -56,6 +58,11 @@ type Option func(*Client)
 
 // WithHTTPClient overrides the HTTP client (used in tests).
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.httpc = h } }
+
+// WithBodyLogging enables debug logging of raw response bodies, with the SID
+// redacted. Off by default so portfolio/account data and session ids are not
+// written to logs unless explicitly requested for E2E debugging.
+func WithBodyLogging(on bool) Option { return func(c *Client) { c.logBodies = on } }
 
 // New returns a Freedom24 client. apiURL defaults to DefaultAPIURL when empty.
 func New(login, password, userID, apiURL string, timeout time.Duration, log *slog.Logger, opts ...Option) (*Client, error) {
@@ -118,7 +125,11 @@ func (c *Client) call(ctx context.Context, cmd string, params map[string]any) (j
 	if err != nil {
 		return nil, fmt.Errorf("%s: read response: %w", cmd, err)
 	}
-	c.log.Debug("freedom response", "cmd", cmd, "http", resp.StatusCode, "body", truncate(body))
+	if c.logBodies {
+		c.log.Debug("freedom response", "cmd", cmd, "http", resp.StatusCode, "body", redactSID(truncate(body)))
+	} else {
+		c.log.Debug("freedom response", "cmd", cmd, "http", resp.StatusCode, "bytes", len(body))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return body, fmt.Errorf("%s: http %d", cmd, resp.StatusCode)
 	}
@@ -266,4 +277,11 @@ func truncate(b []byte) string {
 		return string(b[:max]) + "…"
 	}
 	return string(b)
+}
+
+var sidPattern = regexp.MustCompile(`("SID"\s*:\s*")[^"]*(")`)
+
+// redactSID masks the session id in a response body before it is logged.
+func redactSID(s string) string {
+	return sidPattern.ReplaceAllString(s, `${1}<redacted>${2}`)
 }

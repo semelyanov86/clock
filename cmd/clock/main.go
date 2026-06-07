@@ -91,7 +91,7 @@ func wire(cfg config.Config, log *slog.Logger, rnd *render.Renderer) app.Deps {
 	}
 
 	if cfg.HasFreedom() {
-		fr, err := freedom.New(cfg.Freedom.Login, cfg.Freedom.Password, cfg.Freedom.UserID, cfg.Freedom.APIURL, 30*time.Second, log)
+		fr, err := freedom.New(cfg.Freedom.Login, cfg.Freedom.Password, cfg.Freedom.UserID, cfg.Freedom.APIURL, 30*time.Second, log, freedom.WithBodyLogging(cfg.Freedom.LogBodies))
 		if err != nil {
 			log.Error("init freedom", "err", err)
 		} else {

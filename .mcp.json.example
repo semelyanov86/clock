@@ -1,4 +1,5 @@
 {
+  "_comment": "Template for .mcp.json. Build the server first: cd tools/mcp-divoom-lan && npm run build (dist/ is git-ignored). Set the device host to your own LAN IP. Security guardrails: DIVOOM_ALLOWED_HOSTS restricts per-call target.host (defaults to DIVOOM_DEVICE_HOST); DIVOOM_ASSET_ROOT (optional) confines readable file paths; DIVOOM_MAX_UPLOAD_BYTES caps file size.",
   "mcpServers": {
     "divoom-lan": {
       "type": "stdio",
@@ -11,6 +12,7 @@
         "DIVOOM_DEVICE_PORT": "9000",
         "DIVOOM_TIMEOUT_MS": "45000",
         "DIVOOM_ALLOWED_HOSTS": "192.168.178.40",
+        "DIVOOM_ASSET_ROOT": "/data/web/clock",
         "DIVOOM_MAX_UPLOAD_BYTES": "10485760"
       }
     }

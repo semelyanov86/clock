@@ -451,6 +451,18 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 **Шрифты встроены через `go:embed`** (`internal/render/fonts/DejaVu*`) → бинарь самодостаточный,
 системные шрифты на сервере не нужны.
 
+**Безопасность (после security-review, 2026-06-07):**
+- **Строгая валидация ENV:** значение, заданное, но некорректное, — ошибка старта (не тихий
+  дефолт); проверяются порт, интервалы, lat/lon, таймзоны, схема `FREEDOM_API_URL`.
+- **`.env` → `chmod 600`** (см. `.env.example`); на сервере — systemd `EnvironmentFile` 0600.
+- **Логи Freedom не текут:** тело ответа логируется только при `FREEDOM_LOG_BODIES=true`
+  (для E2E), и даже тогда **SID редактируется**; иначе пишется лишь длина.
+- **MCP-инструмент укреплён** (`tools/mcp-divoom-lan`): per-call `target.host` разрешён только
+  из allowlist (`DIVOOM_ALLOWED_HOSTS`, по умолчанию = `DIVOOM_DEVICE_HOST`); чтение файлов
+  опц. ограничено `DIVOOM_ASSET_ROOT` и всегда лимитировано `DIVOOM_MAX_UPLOAD_BYTES` (10 MiB).
+  Шаблон конфига — `.mcp.json.example`. Транзитивные npm-уязвимости устранены (`npm audit fix`).
+- **HTTP-клиенты:** таймаут + `io.LimitReader` (4 MiB) на каждом ответе; ошибки оборачиваются `%w`.
+
 ## Статус
 
 - [x] MCP-сервер установлен, собран, зарегистрирован в `.mcp.json`.
