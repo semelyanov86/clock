@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "divoom-lan": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/data/web/clock/tools/mcp-divoom-lan/dist/index.js"
+      ],
+      "env": {
+        "DIVOOM_DEVICE_HOST": "192.168.178.40",
+        "DIVOOM_DEVICE_PORT": "9000",
+        "DIVOOM_TIMEOUT_MS": "45000"
+      }
+    }
+  }
+}

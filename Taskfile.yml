@@ -1,0 +1,133 @@
+# Taskfile for the `clock` project (go-task: https://taskfile.dev).
+# Run `task` with no arguments to list every available command.
+#
+# The Go service (image renderer + pusher to the Divoom device) lives under
+# cmd/clock + internal/ once scaffolded. Go tasks below already target that
+# layout, so they activate as soon as `go.mod` and cmd/clock exist.
+version: "3"
+
+vars:
+  # Contabo VDS (vds01, 79.143.176.198) — user `sergey`, passwordless sudo.
+  REMOTE: sergeyem.ru
+  # Go build target.
+  BINARY: clock
+  MAIN: ./cmd/clock
+  BIN_DIR: ./bin
+  COVERAGE: coverage.out
+  # Deploy target (server convention: /var/www/<site>/current + systemd unit).
+  # NOTE: not provisioned yet — see CLAUDE.md ("Сервер деплоя").
+  SERVICE: clock
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list-all
+    silent: true
+
+  # ─── Server access ──────────────────────────────────────────────────────────
+  ssh:
+    desc: Open an interactive SSH session to the Contabo server (sergeyem.ru)
+    interactive: true
+    cmds:
+      - ssh {{.REMOTE}}
+
+  ssh:run:
+    desc: 'Run a one-off command on the server, e.g. `task ssh:run -- "systemctl status nginx"`'
+    cmds:
+      - ssh {{.REMOTE}} {{.CLI_ARGS}}
+
+  logs:
+    desc: Tail the clock service journal on the server (once the systemd unit exists)
+    cmds:
+      - ssh {{.REMOTE}} "journalctl -u {{.SERVICE}}.service -n 100 -f"
+
+  # ─── Go development loop ──────────────────────────────────────────────────────
+  build:
+    desc: Build the binary into ./bin
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -o {{.BIN_DIR}}/{{.BINARY}} {{.MAIN}}
+
+  run:
+    desc: Run the service locally (loads .env if your code reads it)
+    cmds:
+      - go run {{.MAIN}}
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run tests with the race detector and shuffled order (CI gate)
+    cmds:
+      - go test -race -shuffle=on ./...
+
+  test:cover:
+    desc: Run tests with coverage and print the per-function summary
+    cmds:
+      - go test -race -coverprofile={{.COVERAGE}} ./...
+      - go tool cover -func={{.COVERAGE}}
+
+  cover:html:
+    desc: Open the HTML coverage report in a browser
+    deps: [test:cover]
+    cmds:
+      - go tool cover -html={{.COVERAGE}}
+
+  bench:
+    desc: Run benchmarks with allocation stats
+    cmds:
+      - go test -bench=. -benchmem ./...
+
+  fmt:
+    desc: Format code (gofmt -s)
+    cmds:
+      - gofmt -s -w .
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint (install — see CLAUDE.md)
+    cmds:
+      - golangci-lint run
+
+  vuln:
+    desc: Scan for known vulnerabilities (govulncheck)
+    cmds:
+      - govulncheck ./...
+
+  tidy:
+    desc: Tidy and verify modules
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  audit:
+    desc: Full quality gate — fmt, vet, lint, race tests, vuln scan
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test:race
+      - task: vuln
+
+  # ─── Deploy ───────────────────────────────────────────────────────────────────
+  # Server convention: ship a static binary and run it under systemd. The site
+  # user, systemd unit and WireGuard tunnel to the device are NOT provisioned yet.
+  build:linux:
+    desc: Cross-compile a static linux/amd64 binary for the server
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o {{.BIN_DIR}}/{{.BINARY}}-linux-amd64 {{.MAIN}}
+
+  deploy:
+    desc: Build the linux binary and upload it to /tmp on the server (install step pending infra)
+    deps: [build:linux]
+    cmds:
+      - scp {{.BIN_DIR}}/{{.BINARY}}-linux-amd64 {{.REMOTE}}:/tmp/{{.BINARY}}
+      - echo "Uploaded to {{.REMOTE}}:/tmp/{{.BINARY}} — install/restart pending infra (see CLAUDE.md)"
