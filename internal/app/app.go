@@ -108,6 +108,18 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.startFetchers(ctx)
 
+	// Bring the dashboard to the foreground. The create path selects a freshly
+	// created dial; a pre-pinned DIVOOM_CLOCK_ID is otherwise only background-
+	// replaced (which does not change what is displayed), so select it once here
+	// in case the device drifted to another clock.
+	if a.clockID != 0 {
+		sctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+		if err := a.deps.Device.SetClockSelect(sctx, a.clockID); err != nil {
+			a.log.Warn("select configured clock", "clockId", a.clockID, "err", err)
+		}
+		cancel()
+	}
+
 	ticker := time.NewTicker(a.cfg.Intervals.Frame)
 	defer ticker.Stop()
 
