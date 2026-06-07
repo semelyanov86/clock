@@ -1,0 +1,41 @@
+name: CI
+
+# Quality gate for pull requests and feature branches. Pushes to main are
+# handled by deploy.yml (which re-runs the same checks before deploying).
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # `stable` (latest Go) carries the std-library security fixes; building
+          # with a newer toolchain than the go.mod directive is fine.
+          go-version: stable
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector, shuffled order)
+        run: go test -race -shuffle=on ./...
+
+      - name: go.mod tidy check
+        run: go mod tidy && git diff --exit-code
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.11.3
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

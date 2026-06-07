@@ -1,0 +1,71 @@
+name: Deploy
+
+# On every push to main: re-run the quality gate, build a static linux binary,
+# ship it to the Contabo server over SSH, and restart the systemd service.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never let two deploys overlap; queue them instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race detector, shuffled order)
+        run: go test -race -shuffle=on ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.11.3
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Build static linux/amd64 binary
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o bin/clock-linux-amd64 ./cmd/clock
+
+      - name: Ship binary and restart service
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # Atomic swap: upload beside the live binary, then move into place.
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            bin/clock-linux-amd64 "$DEPLOY_USER@$HOST:/var/www/clock/current/clock.new"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes "$DEPLOY_USER@$HOST" 'set -e
+            mv /var/www/clock/current/clock.new /var/www/clock/current/clock
+            chmod +x /var/www/clock/current/clock
+            sudo systemctl restart clock
+            sleep 3
+            systemctl is-active clock'

@@ -26,3 +26,5 @@ coverage.html
 # IDE
 /.idea/
 /.vscode/
+/live*.jpg
+/live*.png
