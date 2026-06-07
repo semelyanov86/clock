@@ -24,9 +24,9 @@ func (r *Renderer) drawHeader(dc *gg.Context, snap model.Snapshot, frame int) fl
 
 	// Panel B: forecast strip (hours | days).
 	fillPanel(dc, 20, 302, 760, 124, 18)
-	dc.SetHexColor(theme.stroke)
+	dc.SetHexColor(theme.strokeSoft)
 	dc.SetLineWidth(1.5)
-	dc.DrawLine(400, 318, 400, 410)
+	dc.DrawLine(400, 322, 400, 406)
 	dc.Stroke()
 
 	r.drawForecast(dc, snap.Weather)
@@ -35,35 +35,48 @@ func (r *Renderer) drawHeader(dc *gg.Context, snap model.Snapshot, frame int) fl
 
 func (r *Renderer) drawDate(dc *gg.Context, generated time.Time) {
 	t := generated.In(r.loc)
-	weekday := ruWeekdayLong(t)
+	weekday := strings.ToUpper(ruWeekdayLong(t))
 	dayMonth := strconv.Itoa(t.Day()) + " " + ruMonthGen(t.Month())
 	year := strconv.Itoa(t.Year())
 
-	weekday = r.fit(dc, weekday, fontBold, 30, 290)
-	r.text(dc, weekday, 758, 70, 1, fontBold, 30, theme.accent)
-	r.text(dc, dayMonth, 758, 120, 1, fontBold, 42, theme.text)
-	r.text(dc, year, 758, 160, 1, fontRegular, 22, theme.muted)
+	weekday = r.fit(dc, weekday, fontBold, 24, 300)
+	r.text(dc, weekday, 758, 62, 1, fontBold, 24, theme.accent)
+	r.text(dc, dayMonth, 758, 112, 1, fontBold, 46, theme.text)
+	r.text(dc, year, 758, 156, 1, fontRegular, 22, theme.muted)
 }
 
 func (r *Renderer) drawWeatherNow(dc *gg.Context, w model.Weather) {
-	drawWeatherIcon(dc, 74, 234, 74, w.Now.Code)
-	r.text(dc, roundTemp(w.Now.TempC), 122, 230, 0, fontBold, 62, theme.text)
+	drawWeatherIcon(dc, 74, 232, 78, w.Now.Code)
+	r.text(dc, roundTemp(w.Now.TempC), 126, 228, 0, fontBold, 64, theme.text)
 
 	_, label := model.DescribeWMO(w.Now.Code)
-	r.text(dc, label, 256, 212, 0, fontBold, 26, theme.accent2)
+	r.text(dc, r.fit(dc, label, fontBold, 26, 180), 262, 210, 0, fontBold, 26, theme.accent2)
 	city := w.City
 	if city == "" {
 		city = "—"
 	}
-	r.text(dc, city, 256, 250, 0, fontRegular, 24, theme.muted)
+	r.text(dc, r.fit(dc, city, fontRegular, 24, 180), 262, 248, 0, fontRegular, 24, theme.muted)
 
-	details := strings.Join([]string{
-		"ощущ. " + roundTemp(w.Now.FeelsC),
-		"вл " + strconv.Itoa(w.Now.Humidity) + "%",
-		strconv.Itoa(int(w.Now.WindKmh)) + " км/ч",
-	}, " · ")
-	details = r.fit(dc, details, fontRegular, 18, 360)
-	r.text(dc, details, 758, 234, 1, fontRegular, 18, theme.muted)
+	// HUD readout cluster: three labelled stats with hairline dividers, far
+	// more legible at a distance than a single thin joined line of text.
+	r.headerStat(dc, 456, "ОЩУЩ.", roundTemp(w.Now.FeelsC))
+	r.headerStat(dc, 578, "ВЛАЖН.", strconv.Itoa(w.Now.Humidity)+"%")
+	r.headerStat(dc, 700, "ВЕТЕР", strconv.Itoa(int(w.Now.WindKmh))+" км/ч")
+	dc.SetHexColor(theme.strokeSoft)
+	dc.SetLineWidth(1.5)
+	for _, dx := range []float64{517, 639} {
+		dc.DrawLine(dx, 214, dx, 256)
+		dc.Stroke()
+	}
+}
+
+// headerStat draws one small instrument-cluster reading: an uppercase caption
+// over a bold value, centred on cx. The value shrinks to fit its column so
+// longer readings (e.g. "13 км/ч") are never clipped.
+func (r *Renderer) headerStat(dc *gg.Context, cx float64, label, value string) {
+	r.text(dc, label, cx, 220, 0.5, fontBold, 14, theme.faint)
+	size := r.fitSize(dc, value, fontBold, 24, 18, 112)
+	r.text(dc, value, cx, 250, 0.5, fontBold, size, theme.text)
 }
 
 func (r *Renderer) drawForecast(dc *gg.Context, w model.Weather) {
@@ -73,7 +86,9 @@ func (r *Renderer) drawForecast(dc *gg.Context, w model.Weather) {
 			break
 		}
 		h := w.Hours[i]
-		r.miniCard(dc, hourCenters[i], 312, h.Time.In(r.loc).Format("15:04"), h.Code, roundTemp(h.TempC), theme.text)
+		r.miniCard(dc, hourCenters[i], 312, h.Time.In(r.loc).Format("15:04"), h.Code, func(cx, y float64) {
+			r.text(dc, roundTemp(h.TempC), cx, y, 0.5, fontBold, 24, theme.text)
+		})
 	}
 
 	dayCenters := []float64{466, 588, 710}
@@ -82,14 +97,29 @@ func (r *Renderer) drawForecast(dc *gg.Context, w model.Weather) {
 			break
 		}
 		d := w.Days[i]
-		val := roundTemp(d.MaxC) + " / " + roundTemp(d.MinC)
-		r.miniCard(dc, dayCenters[i], 312, ruWeekdayShort(d.Date), d.Code, val, theme.text)
+		r.miniCard(dc, dayCenters[i], 312, ruWeekdayShort(d.Date), d.Code, func(cx, y float64) {
+			r.drawHiLo(dc, cx, y, roundTemp(d.MaxC), roundTemp(d.MinC))
+		})
 	}
 }
 
-// miniCard draws a small forecast cell: a label, an icon, and a value line.
-func (r *Renderer) miniCard(dc *gg.Context, cx, top float64, label string, code int, value, valColor string) {
-	r.text(dc, label, cx, top+18, 0.5, fontRegular, 18, theme.muted)
-	drawWeatherIcon(dc, cx, top+58, 40, code)
-	r.text(dc, value, cx, top+96, 0.5, fontBold, 22, valColor)
+// miniCard draws a small forecast cell: a label, an icon, and a value drawn by
+// the supplied callback (a single temperature for hours, a hi/lo for days).
+func (r *Renderer) miniCard(dc *gg.Context, cx, top float64, label string, code int, value func(cx, y float64)) {
+	r.text(dc, label, cx, top+18, 0.5, fontBold, 18, theme.muted)
+	drawWeatherIcon(dc, cx, top+58, 42, code)
+	value(cx, top+96)
+}
+
+// drawHiLo draws "max / min" centred on cx with the high temperature bright and
+// the low dimmed, so the glance value (the high) dominates.
+func (r *Renderer) drawHiLo(dc *gg.Context, cx, y float64, hi, lo string) {
+	const sep = " / "
+	wHi := r.measure(dc, hi, fontBold, 22)
+	wSep := r.measure(dc, sep, fontBold, 22)
+	wLo := r.measure(dc, lo, fontBold, 22)
+	x := cx - (wHi+wSep+wLo)/2
+	r.text(dc, hi, x, y, 0, fontBold, 22, theme.text)
+	r.text(dc, sep, x+wHi, y, 0, fontBold, 22, theme.faint)
+	r.text(dc, lo, x+wHi+wSep, y, 0, fontBold, 22, theme.muted)
 }

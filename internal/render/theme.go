@@ -6,28 +6,53 @@ const (
 	CanvasH = 1280
 )
 
-// palette is the dark colour scheme. Up/down drive the green/red deltas.
+// palette is the dark "finance HUD" colour scheme. It is tuned for a physical
+// device read across a room: deep backgrounds, layered panels, and high-chroma
+// status colours so up/down deltas register at a glance.
 type palette struct {
-	bgTop, bgBottom string
-	panel           string
-	stroke          string
-	text, muted     string
+	// Background layers (top → mid → bottom of the vertical gradient) plus the
+	// faint accent glow painted under the header.
+	bgTop, bgMid, bgBottom string
+	glow                   string
+
+	// Panels: a subtle vertical gradient (top lighter than bottom) reads as a
+	// raised surface; highlight is the 1px inner top edge.
+	panelTop, panelBottom string
+	highlight             string
+	stroke, strokeSoft    string
+
+	// Text tiers, from primary to the dimmest captions.
+	text, muted, faint string
+
+	// Accents: cyan is primary, amber secondary.
 	accent, accent2 string
-	up, down, flat  string
+
+	// Status colours for day-over-day deltas and gauges.
+	up, down, flat string
 }
 
 var theme = palette{
-	bgTop:    "#0B0E14",
-	bgBottom: "#10141D",
-	panel:    "#161B26",
-	stroke:   "#28303F",
-	text:     "#E6EDF3",
-	muted:    "#8A97A8",
-	accent:   "#38BDF8",
-	accent2:  "#FBBF24",
-	up:       "#27C281",
-	down:     "#F2545B",
-	flat:     "#9AA6B6",
+	bgTop:    "#0B0F17",
+	bgMid:    "#0A0D14",
+	bgBottom: "#06080C",
+	glow:     "#103A4E",
+
+	panelTop:    "#1A212F",
+	panelBottom: "#121724",
+	highlight:   "#334055",
+	stroke:      "#2B3445",
+	strokeSoft:  "#1B2230",
+
+	text:  "#EBF2F9",
+	muted: "#9DAABE",
+	faint: "#697789",
+
+	accent:  "#3FC9F4",
+	accent2: "#FBBF24",
+
+	up:   "#36D399",
+	down: "#FB6E76",
+	flat: "#9AA6B6",
 }
 
 // ClockSlot is the geometry of the native clock layer (disp 4) the device draws

@@ -81,26 +81,53 @@ func (r *Renderer) Render(snap model.Snapshot, frame int) ([]byte, error) {
 }
 
 func (r *Renderer) drawBackground(dc *gg.Context) {
+	// Base vertical gradient: a touch of light at the top fading to near-black
+	// at the bottom for depth.
 	grad := gg.NewLinearGradient(0, 0, 0, CanvasH)
 	grad.AddColorStop(0, parseHex(theme.bgTop))
+	grad.AddColorStop(0.45, parseHex(theme.bgMid))
 	grad.AddColorStop(1, parseHex(theme.bgBottom))
 	dc.SetFillStyle(grad)
+	dc.DrawRectangle(0, 0, CanvasW, CanvasH)
+	dc.Fill()
+
+	// Faint cyan glow behind the header gives the dashboard a "HUD" cast that
+	// fades out before it reaches the content.
+	glow := gg.NewRadialGradient(CanvasW*0.5, 120, 0, CanvasW*0.5, 120, 720)
+	glow.AddColorStop(0, withAlpha(theme.glow, 0.55))
+	glow.AddColorStop(1, withAlpha(theme.glow, 0))
+	dc.SetFillStyle(glow)
+	dc.DrawRectangle(0, 0, CanvasW, 520)
+	dc.Fill()
+
+	// Vignette: darken the bottom corners so the lower pages float.
+	vig := gg.NewRadialGradient(CanvasW*0.5, CanvasH*0.78, CanvasW*0.35, CanvasW*0.5, CanvasH*0.78, CanvasH*0.78)
+	vig.AddColorStop(0, withAlpha("#000000", 0))
+	vig.AddColorStop(1, withAlpha("#000000", 0.45))
+	dc.SetFillStyle(vig)
 	dc.DrawRectangle(0, 0, CanvasW, CanvasH)
 	dc.Fill()
 }
 
 func (r *Renderer) drawFooter(dc *gg.Context, snap model.Snapshot, page, pageCount int) {
 	y := float64(CanvasH - 26)
-	r.text(dc, "обновлено "+snap.Generated.In(r.loc).Format("15:04:05"), CanvasW-30, y, 1, fontRegular, 18, theme.muted)
+	r.text(dc, "обновлено "+snap.Generated.In(r.loc).Format("15:04:05"), CanvasW-30, y, 1, fontRegular, 18, theme.faint)
+
+	// Page indicator: the active page is an elongated accent capsule, the rest
+	// are dim dots — instantly readable which page is showing.
+	x := 32.0
 	for i := 0; i < pageCount; i++ {
-		cx := 32 + float64(i)*22
 		if i == page {
 			dc.SetHexColor(theme.accent)
-		} else {
-			dc.SetHexColor(theme.stroke)
+			dc.DrawRoundedRectangle(x-2, y-4, 22, 8, 4)
+			dc.Fill()
+			x += 30
+			continue
 		}
-		dc.DrawCircle(cx, y, 5)
+		dc.SetHexColor(theme.stroke)
+		dc.DrawCircle(x+3, y, 4)
 		dc.Fill()
+		x += 18
 	}
 }
 
@@ -119,15 +146,43 @@ func encodeJPEG(dc *gg.Context) ([]byte, error) {
 	return nil, fmt.Errorf("rendered frame exceeds %d bytes even at low quality (%d)", maxJPEGBytes, buf.Len())
 }
 
-func parseHex(s string) color.Color {
+func parseHex(s string) color.NRGBA {
 	s = strings.TrimPrefix(s, "#")
 	if len(s) != 6 {
-		return color.Black
+		return color.NRGBA{A: 255}
 	}
 	r, _ := strconv.ParseUint(s[0:2], 16, 8)
 	g, _ := strconv.ParseUint(s[2:4], 16, 8)
 	b, _ := strconv.ParseUint(s[4:6], 16, 8)
 	return color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
+}
+
+// mixHex linearly blends a toward b by t (0..1) and returns the result as a
+// "#RRGGBB" string, so it can be fed back into the same hex-based draw helpers.
+func mixHex(a, b string, t float64) string {
+	switch {
+	case t <= 0:
+		return a
+	case t >= 1:
+		return b
+	}
+	ca, cb := parseHex(a), parseHex(b)
+	mix := func(x, y uint8) uint8 { return uint8(float64(x)*(1-t) + float64(y)*t + 0.5) }
+	return fmt.Sprintf("#%02X%02X%02X", mix(ca.R, cb.R), mix(ca.G, cb.G), mix(ca.B, cb.B))
+}
+
+// tintBg returns a dark, desaturated wash of a status colour, suitable as the
+// fill behind a status chip so the bright foreground text stays legible.
+func tintBg(statusHex string) string {
+	return mixHex("#0E1420", statusHex, 0.22)
+}
+
+// withAlpha returns the colour at the given alpha (0..1), used for soft overlays
+// like the background vignette and the decorative quote mark.
+func withAlpha(hex string, a float64) color.NRGBA {
+	c := parseHex(hex)
+	c.A = uint8(a*255 + 0.5)
+	return c
 }
 
 func roundTemp(c float64) string {

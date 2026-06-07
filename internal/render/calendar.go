@@ -51,10 +51,17 @@ func (r *Renderer) drawCalendar(dc *gg.Context, area rect, t time.Time) float64 
 			hex = "#E78A8F" // softened weekend red
 		}
 		if day == today {
+			// Soft glow ring, then a solid accent disc with a dark numeral.
+			glow := gg.NewRadialGradient(cx, cy, 0, cx, cy, 34)
+			glow.AddColorStop(0, withAlpha(theme.accent, 0.45))
+			glow.AddColorStop(1, withAlpha(theme.accent, 0))
+			dc.SetFillStyle(glow)
+			dc.DrawCircle(cx, cy, 34)
+			dc.Fill()
 			dc.SetHexColor(theme.accent)
 			dc.DrawCircle(cx, cy, 22)
 			dc.Fill()
-			hex = theme.bgTop // dark number on the bright circle
+			hex = theme.bgBottom // dark number on the bright circle
 		}
 		r.text(dc, strconv.Itoa(day), cx, cy, 0.5, fontBold, 24, hex)
 	}

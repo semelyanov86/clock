@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	iconSun   = "#FBBF24"
-	iconCloud = "#C2CCDA"
-	iconRain  = "#5BA3F5"
-	iconSnow  = "#E6EDF3"
-	iconBolt  = "#FBBF24"
+	iconSun   = "#FFC83D"
+	iconGlow  = "#FFD873"
+	iconCloud = "#CBD8EA"
+	iconRain  = "#58B0FF"
+	iconSnow  = "#EAF2FB"
+	iconBolt  = "#FFC83D"
 )
 
 // drawWeatherIcon paints a simple vector weather icon centred at (cx, cy) and
@@ -44,8 +45,16 @@ func drawWeatherIcon(dc *gg.Context, cx, cy, size float64, code int) {
 
 func drawSun(dc *gg.Context, cx, cy, size float64) {
 	r := size * 0.22
+	// Soft halo so the sun glows rather than sitting flat on the dark panel.
+	glow := gg.NewRadialGradient(cx, cy, 0, cx, cy, r*2.3)
+	glow.AddColorStop(0, withAlpha(iconGlow, 0.55))
+	glow.AddColorStop(1, withAlpha(iconGlow, 0))
+	dc.SetFillStyle(glow)
+	dc.DrawCircle(cx, cy, r*2.3)
+	dc.Fill()
+
 	dc.SetHexColor(iconSun)
-	dc.SetLineWidth(size * 0.045)
+	dc.SetLineWidth(size * 0.05)
 	for i := 0; i < 8; i++ {
 		ang := float64(i) * math.Pi / 4
 		x1 := cx + math.Cos(ang)*r*1.5

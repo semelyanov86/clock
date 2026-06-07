@@ -11,19 +11,72 @@ import (
 	"github.com/semelyanov86/clock/internal/model"
 )
 
-// fillPanel draws a rounded panel with a subtle border.
+// fillPanel draws a rounded panel: a soft top-to-bottom gradient (raised look),
+// a 1px inner top highlight, and a hairline border.
 func fillPanel(dc *gg.Context, x, y, w, h, radius float64) {
-	dc.SetHexColor(theme.panel)
+	grad := gg.NewLinearGradient(x, y, x, y+h)
+	grad.AddColorStop(0, parseHex(theme.panelTop))
+	grad.AddColorStop(1, parseHex(theme.panelBottom))
+	dc.SetFillStyle(grad)
 	dc.DrawRoundedRectangle(x, y, w, h, radius)
 	dc.Fill()
+
+	// Inner top highlight: a faint bright line just inside the top edge.
+	dc.SetColor(withAlpha(theme.highlight, 0.5))
+	dc.SetLineWidth(1)
+	dc.DrawLine(x+radius, y+1, x+w-radius, y+1)
+	dc.Stroke()
+
 	dc.SetHexColor(theme.stroke)
 	dc.SetLineWidth(1.5)
 	dc.DrawRoundedRectangle(x, y, w, h, radius)
 	dc.Stroke()
 }
 
+// fillPanelEdge draws a panel with a vertical accent bar down its left edge,
+// used to make a card the focal point of its page (balance, Brent, …).
+func fillPanelEdge(dc *gg.Context, x, y, w, h, radius float64, edgeHex string) {
+	fillPanel(dc, x, y, w, h, radius)
+	dc.SetHexColor(edgeHex)
+	dc.DrawRoundedRectangle(x, y, 7, h, radius)
+	dc.Fill()
+	// Square off the bar's right side so only the outer corners stay rounded.
+	dc.DrawRectangle(x+4, y, 3, h)
+	dc.Fill()
+}
+
+// chip draws a rounded status pill containing s, anchored horizontally by ax
+// (0=left edge at x, 1=right edge at x, 0.5=centred on x) and vertically centred
+// on yc. The dark tinted fill plus bright text reads cleanly from across a room.
+func (r *Renderer) chip(dc *gg.Context, s string, x, yc, ax, size float64, fgHex string) {
+	padX := size * 0.52
+	h := size*1.62 + 2
+	w := r.measure(dc, s, fontBold, size) + padX*2
+
+	x0 := x
+	switch ax {
+	case 1:
+		x0 = x - w
+	case 0.5:
+		x0 = x - w/2
+	}
+	y0 := yc - h/2
+	rad := h / 2
+
+	dc.SetHexColor(tintBg(fgHex))
+	dc.DrawRoundedRectangle(x0, y0, w, h, rad)
+	dc.Fill()
+	dc.SetColor(withAlpha(fgHex, 0.45))
+	dc.SetLineWidth(1.2)
+	dc.DrawRoundedRectangle(x0, y0, w, h, rad)
+	dc.Stroke()
+
+	r.text(dc, s, x0+w/2, yc, 0.5, fontBold, size, fgHex)
+}
+
 // drawPercentageBar draws a rounded progress bar: a full-width track plus a
-// fill whose width is frac (0..1) of the track, in the given colour.
+// gradient fill whose width is frac (0..1) of the track. The fill brightens
+// left-to-right so it reads as energy/level rather than a flat block.
 func drawPercentageBar(dc *gg.Context, x, y, w, h, frac float64, fillHex string) {
 	switch {
 	case frac < 0:
@@ -32,18 +85,27 @@ func drawPercentageBar(dc *gg.Context, x, y, w, h, frac float64, fillHex string)
 		frac = 1
 	}
 	radius := h / 2
-	dc.SetHexColor(theme.stroke)
+	dc.SetHexColor(theme.strokeSoft)
 	dc.DrawRoundedRectangle(x, y, w, h, radius)
 	dc.Fill()
+	dc.SetHexColor(theme.stroke)
+	dc.SetLineWidth(1)
+	dc.DrawRoundedRectangle(x, y, w, h, radius)
+	dc.Stroke()
+
 	fw := w * frac
-	if fw > 0 {
-		if fw < h { // keep the rounded cap drawable for tiny fractions
-			fw = h
-		}
-		dc.SetHexColor(fillHex)
-		dc.DrawRoundedRectangle(x, y, fw, h, radius)
-		dc.Fill()
+	if fw <= 0 {
+		return
 	}
+	if fw < h { // keep the rounded cap drawable for tiny fractions
+		fw = h
+	}
+	grad := gg.NewLinearGradient(x, y, x+fw, y)
+	grad.AddColorStop(0, parseHex(mixHex(fillHex, "#000000", 0.28)))
+	grad.AddColorStop(1, parseHex(fillHex))
+	dc.SetFillStyle(grad)
+	dc.DrawRoundedRectangle(x, y, fw, h, radius)
+	dc.Fill()
 }
 
 // usageColor grades a utilization fraction: green when low, amber when
@@ -97,6 +159,16 @@ func (r *Renderer) measure(dc *gg.Context, s string, kind fontKind, size float64
 	dc.SetFontFace(r.fonts.face(kind, size))
 	w, _ := dc.MeasureString(s)
 	return w
+}
+
+// fitSize shrinks size (down to min) until s fits within maxW, so a value never
+// gets clipped regardless of locale wording. It prefers shrinking over the
+// ellipsis truncation of fit, keeping the whole value readable.
+func (r *Renderer) fitSize(dc *gg.Context, s string, kind fontKind, size, min, maxW float64) float64 {
+	for size > min && r.measure(dc, s, kind, size) > maxW {
+		size--
+	}
+	return size
 }
 
 // fit truncates s with an ellipsis so it fits within maxW.

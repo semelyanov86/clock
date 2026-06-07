@@ -10,14 +10,23 @@ import (
 	"github.com/semelyanov86/clock/internal/model"
 )
 
-// sectionTitle draws a page heading with an accent underline and returns the y
-// below it.
+// sectionTitle draws a page heading: a vertical accent tab, the title, and a
+// hairline rule (accent-tipped) spanning the page width. Returns the y below it.
 func (r *Renderer) sectionTitle(dc *gg.Context, area rect, title string) float64 {
-	r.text(dc, title, area.x+6, area.y+20, 0, fontBold, 30, theme.text)
 	dc.SetHexColor(theme.accent)
-	dc.DrawRectangle(area.x+6, area.y+40, 64, 4)
+	dc.DrawRoundedRectangle(area.x, area.y-4, 7, 32, 3)
 	dc.Fill()
-	return area.y + 62
+
+	r.text(dc, title, area.x+22, area.y+13, 0, fontBold, 30, theme.text)
+
+	ry := area.y + 40
+	dc.SetHexColor(theme.strokeSoft)
+	dc.DrawRectangle(area.x, ry, area.w, 2)
+	dc.Fill()
+	dc.SetHexColor(theme.accent)
+	dc.DrawRectangle(area.x, ry, 150, 2)
+	dc.Fill()
+	return area.y + 60
 }
 
 // drawParagraph word-wraps s within maxW and returns the baseline below the
@@ -37,23 +46,23 @@ func (r *Renderer) drawParagraph(dc *gg.Context, s, hex string, x, topY, maxW, l
 	return base
 }
 
-// drawDeltaBlock draws an arrow + percentage (large) over a signed absolute
-// change (small), right-aligned at xRight and vertically centred on yc.
+// drawDeltaBlock draws a status chip (arrow + percentage) over the signed
+// absolute change, right-aligned at xRight and centred on yc.
 func (r *Renderer) drawDeltaBlock(dc *gg.Context, xRight, yc float64, d model.Delta, currency string) {
 	col := deltaColor(d)
-	r.text(dc, deltaArrow(d)+" "+formatPct(d), xRight, yc-16, 1, fontBold, 34, col)
-	r.text(dc, formatSignedAbs(d, currency, 2), xRight, yc+20, 1, fontRegular, 23, col)
+	r.chip(dc, deltaArrow(d)+" "+formatPct(d), xRight, yc-16, 1, 30, col)
+	r.text(dc, formatSignedAbs(d, currency, 2), xRight, yc+30, 1, fontRegular, 22, col)
 }
 
 func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect) {
 	y := r.sectionTitle(dc, area, "ПОРТФЕЛЬ")
 	p := snap.Portfolio
 
-	const totalH = 132
-	fillPanel(dc, area.x, y, area.w, totalH, 18)
-	r.text(dc, "Общий баланс", area.x+24, y+34, 0, fontRegular, 22, theme.muted)
-	r.text(dc, formatMoney(p.TotalValue, p.TotalCurrency, 2), area.x+24, y+90, 0, fontBold, 56, theme.text)
-	r.drawDeltaBlock(dc, area.x+area.w-24, y+74, p.TotalDelta, p.TotalCurrency)
+	const totalH = 134
+	fillPanelEdge(dc, area.x, y, area.w, totalH, 18, deltaColor(p.TotalDelta))
+	r.text(dc, "ОБЩИЙ БАЛАНС", area.x+30, y+36, 0, fontBold, 20, theme.muted)
+	r.text(dc, formatMoney(p.TotalValue, p.TotalCurrency, 2), area.x+30, y+94, 0, fontBold, 58, theme.text)
+	r.drawDeltaBlock(dc, area.x+area.w-26, y+76, p.TotalDelta, p.TotalCurrency)
 	y += totalH + 16
 
 	if len(p.Positions) == 0 {
@@ -61,21 +70,41 @@ func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect)
 		return
 	}
 
-	const rowH = 96
+	const rowH = 108
 	maxRows := int((area.y + area.h - y) / rowH)
 	for i, pos := range p.Positions {
 		if i >= maxRows {
 			break
 		}
 		ry := y + float64(i)*rowH
-		fillPanel(dc, area.x, ry, area.w, rowH-12, 14)
-		r.text(dc, pos.Symbol, area.x+22, ry+32, 0, fontBold, 30, theme.text)
-		name := r.fit(dc, pos.Name, fontRegular, 20, 360)
-		r.text(dc, name, area.x+22, ry+62, 0, fontRegular, 20, theme.muted)
+		ih := float64(rowH - 12)
+		fillPanel(dc, area.x, ry, area.w, ih, 14)
 
-		r.text(dc, formatMoney(pos.Value, pos.Currency, 2), area.x+area.w-22, ry+32, 1, fontBold, 30, theme.text)
-		col := deltaColor(pos.Delta)
-		r.text(dc, deltaArrow(pos.Delta)+" "+formatPct(pos.Delta), area.x+area.w-22, ry+64, 1, fontBold, 22, col)
+		r.text(dc, pos.Symbol, area.x+24, ry+34, 0, fontBold, 30, theme.text)
+		name := r.fit(dc, pos.Name, fontRegular, 20, 340)
+		r.text(dc, name, area.x+24, ry+62, 0, fontRegular, 20, theme.muted)
+
+		r.text(dc, formatMoney(pos.Value, pos.Currency, 2), area.x+area.w-24, ry+34, 1, fontMono, 28, theme.text)
+		r.chip(dc, deltaArrow(pos.Delta)+" "+formatPct(pos.Delta), area.x+area.w-24, ry+66, 1, 20, deltaColor(pos.Delta))
+
+		// Allocation meter: this holding's share of the total portfolio value —
+		// a glanceable sense of weighting, drawn as an underline along the row.
+		if p.TotalValue > 0 {
+			frac := math.Min(pos.Value/p.TotalValue, 1)
+			barY := ry + ih - 16
+			barW := 330.0
+			dc.SetColor(withAlpha(theme.stroke, 0.7))
+			dc.DrawRoundedRectangle(area.x+24, barY, barW, 6, 3)
+			dc.Fill()
+			fw := barW * frac
+			if fw < 6 {
+				fw = 6
+			}
+			dc.SetColor(withAlpha(theme.accent, 0.7))
+			dc.DrawRoundedRectangle(area.x+24, barY, fw, 6, 3)
+			dc.Fill()
+			r.text(dc, strconv.Itoa(int(math.Round(frac*100)))+"%", area.x+24+barW+16, barY+3, 0, fontBold, 18, theme.muted)
+		}
 	}
 }
 
@@ -85,7 +114,7 @@ func (r *Renderer) pageMarkets(dc *gg.Context, snap model.Snapshot, area rect) {
 	// ETF 2×2 grid.
 	const gap = 16
 	tileW := (area.w - gap) / 2
-	const etfH = 116
+	const etfH = 120
 	for i, inst := range snap.ETFs {
 		if i >= 4 {
 			break
@@ -94,22 +123,22 @@ func (r *Renderer) pageMarkets(dc *gg.Context, snap model.Snapshot, area rect) {
 		row := float64(i / 2)
 		tx := area.x + col*(tileW+gap)
 		ty := y + row*(etfH+gap)
-		r.instrumentTile(dc, tx, ty, tileW, etfH, inst)
+		r.instrumentTile(dc, tx, ty, tileW, etfH, inst, "")
 	}
 	y += 2*etfH + gap + gap
 
-	// Brent: full-width tile.
-	const brentH = 104
-	r.instrumentTile(dc, area.x, y, area.w, brentH, snap.Brent)
+	// Brent: full-width tile with an amber commodity edge.
+	const brentH = 108
+	r.instrumentTile(dc, area.x, y, area.w, brentH, snap.Brent, theme.accent2)
 	y += brentH + gap
 
 	// FX: three tiles (rates vs RUB).
-	r.text(dc, "Курсы к рублю", area.x+6, y+14, 0, fontRegular, 20, theme.muted)
-	y += 28
+	r.text(dc, "КУРСЫ К РУБЛЮ", area.x+2, y+14, 0, fontBold, 20, theme.muted)
+	y += 30
 	fxW := (area.w - 2*gap) / 3
 	fxH := area.y + area.h - y
-	if fxH > 150 {
-		fxH = 150
+	if fxH > 156 {
+		fxH = 156
 	}
 	for i, fx := range snap.FX {
 		if i >= 3 {
@@ -120,19 +149,26 @@ func (r *Renderer) pageMarkets(dc *gg.Context, snap model.Snapshot, area rect) {
 	}
 }
 
-func (r *Renderer) instrumentTile(dc *gg.Context, x, y, w, h float64, inst model.Instrument) {
-	fillPanel(dc, x, y, w, h, 16)
+// instrumentTile draws one quote card. A non-empty edgeHex adds a left accent
+// bar (used to flag the commodity row).
+func (r *Renderer) instrumentTile(dc *gg.Context, x, y, w, h float64, inst model.Instrument, edgeHex string) {
+	pad := 18.0
+	if edgeHex != "" {
+		fillPanelEdge(dc, x, y, w, h, 16, edgeHex)
+		pad = 24
+	} else {
+		fillPanel(dc, x, y, w, h, 16)
+	}
 	if inst.Symbol == "" {
 		r.text(dc, "—", x+w/2, y+h/2, 0.5, fontRegular, 24, theme.muted)
 		return
 	}
-	r.text(dc, inst.Symbol, x+18, y+32, 0, fontBold, 26, theme.accent)
+	r.text(dc, inst.Symbol, x+pad, y+32, 0, fontBold, 26, theme.accent)
 	if inst.Name != "" {
-		r.text(dc, r.fit(dc, inst.Name, fontRegular, 17, w-36), x+18, y+58, 0, fontRegular, 17, theme.muted)
+		r.text(dc, r.fit(dc, inst.Name, fontRegular, 17, w-pad-16), x+pad, y+58, 0, fontRegular, 17, theme.muted)
 	}
-	r.text(dc, formatMoney(inst.Last, inst.Currency, 2), x+18, y+h-24, 0, fontMono, 32, theme.text)
-	col := deltaColor(inst.Delta)
-	r.text(dc, deltaArrow(inst.Delta)+" "+formatPct(inst.Delta), x+w-18, y+h-26, 1, fontBold, 22, col)
+	r.text(dc, formatMoney(inst.Last, inst.Currency, 2), x+pad, y+h-24, 0, fontMono, 32, theme.text)
+	r.chip(dc, deltaArrow(inst.Delta)+" "+formatPct(inst.Delta), x+w-18, y+h-30, 1, 21, deltaColor(inst.Delta))
 }
 
 func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrument) {
@@ -141,13 +177,12 @@ func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrumen
 		r.text(dc, "—", x+w/2, y+h/2, 0.5, fontRegular, 24, theme.muted)
 		return
 	}
-	r.text(dc, fx.Symbol, x+16, y+30, 0, fontBold, 24, theme.accent)
+	r.text(dc, fx.Symbol, x+16, y+34, 0, fontBold, 24, theme.accent)
 	if fx.Name != "" {
-		r.text(dc, r.fit(dc, fx.Name, fontRegular, 18, w-28), x+16, y+56, 0, fontRegular, 18, theme.muted)
+		r.text(dc, r.fit(dc, fx.Name, fontRegular, 18, w-28), x+16, y+60, 0, fontRegular, 18, theme.muted)
 	}
-	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-42, 0, fontMono, 28, theme.text)
-	col := deltaColor(fx.Delta)
-	r.text(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-14, 0, fontBold, 20, col)
+	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-52, 0, fontMono, 26, theme.text)
+	r.chip(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-18, 0, 19, deltaColor(fx.Delta))
 }
 
 // pageClaude shows Claude's unified rate-limit usage: the rolling 5-hour block
@@ -162,53 +197,58 @@ func (r *Renderer) pageClaude(dc *gg.Context, snap model.Snapshot, area rect) {
 	}
 
 	now := snap.Generated.In(r.loc)
-	const gaugeH = 156
+	const gaugeH = 232
+	y += 14
 	r.usageGauge(dc, area.x, y, area.w, gaugeH, "5 ЧАСОВ", u.Block5h, now)
-	y += gaugeH + 18
+	y += gaugeH + 26
 	r.usageGauge(dc, area.x, y, area.w, gaugeH, "НЕДЕЛЯ", u.Weekly, now)
-	y += gaugeH + 14
+	y += gaugeH + 18
 
 	if !u.Updated.IsZero() {
-		r.text(dc, "обновлено "+u.Updated.In(r.loc).Format("15:04"), area.x+area.w-6, y+8, 1, fontRegular, 18, theme.muted)
+		r.text(dc, "обновлено "+u.Updated.In(r.loc).Format("15:04"), area.x+area.w-6, y+8, 1, fontRegular, 18, theme.faint)
 	}
 }
 
-// usageGauge draws one labelled rate-limit window: title, big percentage,
-// progress bar, and a reset countdown.
+// usageGauge draws one labelled rate-limit window: a status dot + title, a large
+// percentage, a gradient progress bar, and a reset countdown.
 func (r *Renderer) usageGauge(dc *gg.Context, x, y, w, h float64, title string, win model.ClaudeWindow, now time.Time) {
 	fillPanel(dc, x, y, w, h, 18)
 	col := usageColor(win.Utilization)
 
-	r.text(dc, title, x+24, y+38, 0, fontBold, 26, theme.accent)
-	pct := strconv.Itoa(int(math.Round(win.Utilization*100))) + "%"
-	r.text(dc, pct, x+w-24, y+46, 1, fontBold, 56, col)
+	dc.SetHexColor(col)
+	dc.DrawCircle(x+38, y+46, 9)
+	dc.Fill()
+	r.text(dc, title, x+60, y+46, 0, fontBold, 28, theme.text)
 
-	drawPercentageBar(dc, x+24, y+82, w-48, 22, win.Utilization, col)
+	pct := strconv.Itoa(int(math.Round(win.Utilization*100))) + "%"
+	r.text(dc, pct, x+w-28, y+56, 1, fontBold, 74, col)
+
+	drawPercentageBar(dc, x+30, y+h*0.55, w-60, 30, win.Utilization, col)
 
 	if s := humanizeUntil(now, win.ResetAt); s != "" {
-		r.text(dc, s, x+24, y+h-26, 0, fontRegular, 21, theme.muted)
+		r.text(dc, s, x+30, y+h-34, 0, fontRegular, 22, theme.muted)
 	}
 }
 
 func (r *Renderer) pageInfo(dc *gg.Context, snap model.Snapshot, frame int, area rect) {
 	t := snap.Generated.In(r.loc)
-	r.sectionTitle(dc, area, ruMonthNom(t.Month())+" "+strconv.Itoa(t.Year()))
+	y := r.sectionTitle(dc, area, ruMonthNom(t.Month())+" "+strconv.Itoa(t.Year()))
 
-	calBottom := r.drawCalendar(dc, rect{x: area.x, y: area.y + 62, w: area.w, h: 360}, t)
+	calBottom := r.drawCalendar(dc, rect{x: area.x, y: y + 4, w: area.w, h: 360}, t)
 
 	// News panel (rotates by frame).
 	ny := calBottom + 16
-	const newsH = 150
-	fillPanel(dc, area.x, ny, area.w, newsH, 16)
-	r.text(dc, "НОВОСТИ", area.x+20, ny+28, 0, fontBold, 20, theme.accent)
+	const newsH = 154
+	fillPanelEdge(dc, area.x, ny, area.w, newsH, 16, theme.accent)
+	r.text(dc, "НОВОСТИ", area.x+26, ny+30, 0, fontBold, 20, theme.accent)
 	if len(snap.News) > 0 {
 		item := snap.News[cycleIndex(frame, len(snap.News))]
-		r.drawParagraph(dc, item.Title, theme.text, area.x+20, ny+44, area.w-40, 34, fontBold, 26, 3)
+		r.drawParagraph(dc, item.Title, theme.text, area.x+26, ny+46, area.w-52, 34, fontBold, 26, 3)
 	} else {
-		r.text(dc, "нет новостей", area.x+20, ny+90, 0, fontRegular, 22, theme.muted)
+		r.text(dc, "нет новостей", area.x+26, ny+90, 0, fontRegular, 22, theme.muted)
 	}
 
-	// Quote panel fills the remainder.
+	// Quote panel fills the remainder, with an oversized decorative mark.
 	qy := ny + newsH + 16
 	qh := area.y + area.h - qy
 	if qh < 90 {
@@ -217,9 +257,27 @@ func (r *Renderer) pageInfo(dc *gg.Context, snap model.Snapshot, frame int, area
 	fillPanel(dc, area.x, qy, area.w, qh, 16)
 	if len(snap.Quotes) > 0 {
 		q := snap.Quotes[cycleIndex(frame, len(snap.Quotes))]
-		end := r.drawParagraph(dc, "«"+q.Text+"»", theme.text, area.x+20, qy+16, area.w-40, 32, fontRegular, 24, 3)
+
+		// Oversized opening mark watermark in the top-left corner.
+		dc.SetColor(withAlpha(theme.accent, 0.13))
+		dc.SetFontFace(r.fonts.face(fontBold, 150))
+		dc.DrawStringAnchored("“", area.x+56, qy+70, 0.5, 0.5)
+
+		// Vertically centre the text + author block within the remaining panel.
+		const lineH, qSize = 36, 26
+		dc.SetFontFace(r.fonts.face(fontRegular, qSize))
+		n := len(dc.WordWrap(q.Text, area.w-72))
+		if n > 4 {
+			n = 4
+		}
+		blockH := float64(n)*lineH + 44
+		startY := qy + (qh-blockH)/2
+		if startY < qy+28 {
+			startY = qy + 28
+		}
+		end := r.drawParagraph(dc, q.Text, theme.text, area.x+36, startY, area.w-72, lineH, fontRegular, qSize, 4)
 		if q.Author != "" {
-			r.text(dc, "— "+q.Author, area.x+area.w-24, end+18, 1, fontBold, 22, theme.accent2)
+			r.text(dc, "— "+q.Author, area.x+area.w-28, end+24, 1, fontBold, 22, theme.accent2)
 		}
 	}
 }
