@@ -59,7 +59,7 @@ type Renderer interface {
 type Device interface {
 	Ping(ctx context.Context) error
 	CreateLocalClock(ctx context.Context, name string, itemList []map[string]any, itemIDList []string, background []byte) (int, error)
-	ReplaceDialBg(ctx context.Context, clockID int, background []byte) error
+	PatchDialBg(ctx context.Context, clockID int, background []byte) error
 	SetClockSelect(ctx context.Context, clockID int) error
 }
 
@@ -164,8 +164,15 @@ func (a *App) pushFrame(ctx context.Context, frame int) {
 		return
 	}
 
-	if err := a.deps.Device.ReplaceDialBg(pctx, a.clockID, jpeg); err != nil {
-		a.log.Warn("push background", "clockId", a.clockID, "frame", frame, "err", err)
+	// Patch the stored backdrop, then re-select the dial so the device redraws
+	// it. On the Times Frame ReplaceDialBg only updates a cache that is not shown
+	// live, so the displayed page would never change without this.
+	if err := a.deps.Device.PatchDialBg(pctx, a.clockID, jpeg); err != nil {
+		a.log.Warn("patch background", "clockId", a.clockID, "frame", frame, "err", err)
+		return
+	}
+	if err := a.deps.Device.SetClockSelect(pctx, a.clockID); err != nil {
+		a.log.Warn("refresh dial", "clockId", a.clockID, "frame", frame, "err", err)
 	}
 }
 

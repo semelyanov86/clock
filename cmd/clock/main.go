@@ -152,7 +152,10 @@ func pushOnce(ctx context.Context, cfg config.Config, log *slog.Logger, dev app.
 	defer cancel()
 
 	if cfg.Device.ClockID > 0 {
-		return dev.ReplaceDialBg(ctx, cfg.Device.ClockID, jpeg)
+		if err := dev.PatchDialBg(ctx, cfg.Device.ClockID, jpeg); err != nil {
+			return err
+		}
+		return dev.SetClockSelect(ctx, cfg.Device.ClockID)
 	}
 	id, err := dev.CreateLocalClock(ctx, "Clock Dashboard", app.ClockItems(cfg.Device.ClockFont), []string{"time_main"}, jpeg)
 	if err != nil {

@@ -26,8 +26,8 @@ type fakeRenderer struct{}
 func (fakeRenderer) Render(_ model.Snapshot, _ int) ([]byte, error) { return []byte{0xFF, 0xD8}, nil }
 
 type fakeDevice struct {
-	creates, replaces, selects int
-	lastClockID                int
+	creates, patches, selects int
+	lastClockID               int
 }
 
 func (f *fakeDevice) Ping(context.Context) error { return nil }
@@ -35,8 +35,8 @@ func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any,
 	f.creates++
 	return 555, nil
 }
-func (f *fakeDevice) ReplaceDialBg(_ context.Context, clockID int, _ []byte) error {
-	f.replaces++
+func (f *fakeDevice) PatchDialBg(_ context.Context, clockID int, _ []byte) error {
+	f.patches++
 	f.lastClockID = clockID
 	return nil
 }
@@ -97,19 +97,21 @@ func TestDoMarketsMapping(t *testing.T) {
 	}
 }
 
-func TestPushFrameCreatesThenReplaces(t *testing.T) {
+func TestPushFrameCreatesThenPatches(t *testing.T) {
 	t.Parallel()
 	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24}}
 	dev := &fakeDevice{}
 	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
 
+	// First push with no pinned clock: create + select.
 	a.pushFrame(context.Background(), 0)
 	if dev.creates != 1 || a.clockID != 555 || dev.selects != 1 {
 		t.Fatalf("after first push: creates=%d clockID=%d selects=%d", dev.creates, a.clockID, dev.selects)
 	}
+	// Subsequent push: patch the backdrop, then re-select to force a redraw.
 	a.pushFrame(context.Background(), 1)
-	if dev.replaces != 1 || dev.lastClockID != 555 {
-		t.Fatalf("after second push: replaces=%d lastClockID=%d", dev.replaces, dev.lastClockID)
+	if dev.patches != 1 || dev.lastClockID != 555 || dev.selects != 2 {
+		t.Fatalf("after second push: patches=%d lastClockID=%d selects=%d", dev.patches, dev.lastClockID, dev.selects)
 	}
 }
 

@@ -19,9 +19,11 @@ const (
 	endpointAPI       = "/divoom_api"
 	endpointCreate    = "/create_local_clock"
 	endpointReplaceBg = "/replace_clock_dial_bg"
+	endpointPatch     = "/patch_local_clock"
 
 	boundaryCreate    = "----GoDivoomCreateClockBoundary7YA4YWxkTrZu0gW"
 	boundaryReplaceBg = "----GoDivoomReplaceBgBoundary7YA4YWxkTrZu0gW"
+	boundaryPatch     = "----GoDivoomPatchClockBoundary7YA4YWxkTrZu0gW"
 
 	// maxBackgroundBytes mirrors DIVOOM_REPLACE_DIAL_BG_MAX_FILE_BYTES.
 	maxBackgroundBytes = 500 * 1024
@@ -123,6 +125,33 @@ func (c *Client) ReplaceDialBg(ctx context.Context, clockID int, background []by
 		return err
 	}
 	_, err = parseResponse("Device/ReplaceClockDialBgFile", raw)
+	return err
+}
+
+// PatchDialBg replaces the dial's actual stored backdrop via
+// Device/PatchLocalClockInfo (multipart /patch_local_clock), preserving the
+// ItemList (the native clock layer keeps ticking). Unlike ReplaceDialBg — whose
+// cache the Times Frame does not show on the live display — this changes the
+// stored background, so a following SetClockSelect makes the device redraw the
+// new image. When clockID is 0 the currently displayed dial is targeted.
+func (c *Client) PatchDialBg(ctx context.Context, clockID int, background []byte) error {
+	if err := validateBackground(background); err != nil {
+		return err
+	}
+	meta := map[string]any{
+		"Command":    "Device/PatchLocalClockInfo",
+		"ReturnCode": 0,
+	}
+	if clockID > 0 {
+		meta["ClockId"] = clockID
+	} else {
+		meta["UseCurrentDisplayClock"] = 1
+	}
+	raw, err := c.postMultipart(ctx, endpointPatch, meta, boundaryPatch, "clock_bg.jpg", background)
+	if err != nil {
+		return err
+	}
+	_, err = parseResponse("Device/PatchLocalClockInfo", raw)
 	return err
 }
 
