@@ -1,8 +1,10 @@
 package render
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/fogleman/gg"
@@ -18,6 +20,68 @@ func fillPanel(dc *gg.Context, x, y, w, h, radius float64) {
 	dc.SetLineWidth(1.5)
 	dc.DrawRoundedRectangle(x, y, w, h, radius)
 	dc.Stroke()
+}
+
+// drawPercentageBar draws a rounded progress bar: a full-width track plus a
+// fill whose width is frac (0..1) of the track, in the given colour.
+func drawPercentageBar(dc *gg.Context, x, y, w, h, frac float64, fillHex string) {
+	switch {
+	case frac < 0:
+		frac = 0
+	case frac > 1:
+		frac = 1
+	}
+	radius := h / 2
+	dc.SetHexColor(theme.stroke)
+	dc.DrawRoundedRectangle(x, y, w, h, radius)
+	dc.Fill()
+	fw := w * frac
+	if fw > 0 {
+		if fw < h { // keep the rounded cap drawable for tiny fractions
+			fw = h
+		}
+		dc.SetHexColor(fillHex)
+		dc.DrawRoundedRectangle(x, y, fw, h, radius)
+		dc.Fill()
+	}
+}
+
+// usageColor grades a utilization fraction: green when low, amber when
+// elevated, red when high.
+func usageColor(frac float64) string {
+	switch {
+	case frac >= 0.85:
+		return theme.down
+	case frac >= 0.6:
+		return theme.accent2
+	default:
+		return theme.up
+	}
+}
+
+// humanizeUntil renders a short Russian "resets in …" string for a future
+// instant relative to now. It returns "" when reset is unknown (zero).
+func humanizeUntil(now, reset time.Time) string {
+	if reset.IsZero() {
+		return ""
+	}
+	d := reset.Sub(now)
+	if d <= 0 {
+		return "сброс скоро"
+	}
+	switch {
+	case d >= 24*time.Hour:
+		days := int(d / (24 * time.Hour))
+		hrs := int((d % (24 * time.Hour)) / time.Hour)
+		return fmt.Sprintf("сброс через %dд %dч", days, hrs)
+	case d >= time.Hour:
+		hrs := int(d / time.Hour)
+		mins := int((d % time.Hour) / time.Minute)
+		return fmt.Sprintf("сброс через %dч %02dм", hrs, mins)
+	default:
+		mins := int(d/time.Minute) + 1
+		return fmt.Sprintf("сброс через %dм", mins)
+	}
 }
 
 // text draws s anchored horizontally by ax (0=left, 0.5=center, 1=right) and

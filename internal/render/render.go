@@ -19,7 +19,8 @@ import (
 	"github.com/semelyanov86/clock/internal/model"
 )
 
-// numPages is the number of rotating body pages.
+// numPages is the number of base rotating body pages. The optional
+// Claude-usage page is appended at render time when its data is present.
 const numPages = 3
 
 // maxJPEGBytes is the device limit for a dial background.
@@ -59,18 +60,23 @@ func (r *Renderer) Render(snap model.Snapshot, frame int) ([]byte, error) {
 
 	headerBottom := r.drawHeader(dc, snap, frame)
 
-	page := cycleIndex(frame, numPages)
 	body := rect{x: 20, y: headerBottom + 14, w: CanvasW - 40, h: CanvasH - 20 - (headerBottom + 14) - 44}
-	switch page {
-	case 0:
-		r.pagePortfolio(dc, snap, body)
-	case 1:
-		r.pageMarkets(dc, snap, body)
-	case 2:
-		r.pageInfo(dc, snap, frame, body)
+
+	// The base pages always rotate; the Claude-usage page joins the rotation
+	// only when its data is present (the widget is opt-in).
+	pages := []func(rect){
+		func(a rect) { r.pagePortfolio(dc, snap, a) },
+		func(a rect) { r.pageMarkets(dc, snap, a) },
+		func(a rect) { r.pageInfo(dc, snap, frame, a) },
+	}
+	if snap.Claude.Valid {
+		pages = append(pages, func(a rect) { r.pageClaude(dc, snap, a) })
 	}
 
-	r.drawFooter(dc, snap, page)
+	page := cycleIndex(frame, len(pages))
+	pages[page](body)
+
+	r.drawFooter(dc, snap, page, len(pages))
 	return encodeJPEG(dc)
 }
 
@@ -83,10 +89,10 @@ func (r *Renderer) drawBackground(dc *gg.Context) {
 	dc.Fill()
 }
 
-func (r *Renderer) drawFooter(dc *gg.Context, snap model.Snapshot, page int) {
+func (r *Renderer) drawFooter(dc *gg.Context, snap model.Snapshot, page, pageCount int) {
 	y := float64(CanvasH - 26)
 	r.text(dc, "обновлено "+snap.Generated.In(r.loc).Format("15:04:05"), CanvasW-30, y, 1, fontRegular, 18, theme.muted)
-	for i := 0; i < numPages; i++ {
+	for i := 0; i < pageCount; i++ {
 		cx := 32 + float64(i)*22
 		if i == page {
 			dc.SetHexColor(theme.accent)

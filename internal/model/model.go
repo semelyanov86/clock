@@ -171,6 +171,24 @@ type Quote struct {
 	Author string
 }
 
+// ClaudeWindow is one rolling rate-limit window from Claude's unified limits
+// (the same data Claude Code shows in /usage). Utilization is the fraction of
+// the window consumed (0..1); ResetAt is when it rolls over.
+type ClaudeWindow struct {
+	Utilization float64
+	ResetAt     time.Time
+}
+
+// ClaudeUsage mirrors Claude's unified rate-limit usage: the rolling 5-hour
+// block and the weekly window. Valid is false when the data could not be
+// fetched, so the renderer can show a placeholder instead of zeroes.
+type ClaudeUsage struct {
+	Updated time.Time
+	Block5h ClaudeWindow
+	Weekly  ClaudeWindow
+	Valid   bool
+}
+
 // Snapshot is the immutable view of all data the renderer needs for one frame.
 // The application loop assembles it from the latest values held in the store.
 type Snapshot struct {
@@ -182,4 +200,5 @@ type Snapshot struct {
 	FX        []Instrument
 	News      []NewsItem
 	Quotes    []Quote
+	Claude    ClaudeUsage
 }

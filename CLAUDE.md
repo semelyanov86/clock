@@ -376,6 +376,7 @@ Go 1.25.1 и `task` (go-task) 3.51.1.
 │   ├── weather/              # Open-Meteo (без ключа)
 │   ├── favqs/                # favqs.com (цитаты, англ.)
 │   ├── freedom/              # Tradernet сессия: authByLogin(viewOnly)→SID; getOPQ, getMarketReviews, getSecurityInfo
+│   ├── claudeusage/          # лимиты Claude (/usage): OAuth-токен → unified rate-limit заголовки
 │   ├── render/               # рендер 800×1280 → JPEG; fonts/*.ttf встроены через go:embed
 │   └── app/                  # снапшот-стор + планировщик фетчеров + кадровый цикл + пуш
 ├── reference/                # снимки реального состояния устройства
@@ -463,6 +464,26 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
   Шаблон конфига — `.mcp.json.example`. Транзитивные npm-уязвимости устранены (`npm audit fix`).
 - **HTTP-клиенты:** таймаут + `io.LimitReader` (4 MiB) на каждом ответе; ошибки оборачиваются `%w`.
 
+### Виджет «Лимиты Claude» (opt-in, 2026-06-07)
+
+Опциональная 4-я страница ротации: два гейджа — **5-часовой блок** и **недельное окно**
+использования лимитов Claude (как в `/usage`). Пакет `internal/claudeusage` читает OAuth-токен
+Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`-запрос (`max_tokens:1`,
+системный промпт Claude Code, `anthropic-beta: oauth-2025-04-20`) на `api.anthropic.com`, забирая
+заголовки `anthropic-ratelimit-unified-5h/7d-utilization` + `-reset`. **Подтверждено вживую**
+(`count_tokens` заголовки НЕ отдаёт; `messages` — отдаёт).
+
+- **Opt-in:** `CLAUDE_USAGE_ENABLED=true` (по умолчанию выкл). Когда выкл/нет данных — страница
+  не показывается (динамический счётчик страниц в `render.go`; smoke-тест покрывает 3- и 4-стр.).
+- **«Серая зона»:** подписочный OAuth-токен вне Claude Code + недокументированные заголовки —
+  могут сломаться. Каждый опрос тратит ~1 токен той же квоты, что показывает.
+- **Где креды:** токен читается на каждый опрос (подхватывает refresh от Claude Code). Для Contabo —
+  поставить там Claude Code под своим аккаунтом; если он простаивает, токен протухает (`expiresAt`) —
+  нужен периодический рефреш (`claude` по cron или refresh-обмен в коде). **Открытый вопрос.**
+- **ENV:** `CLAUDE_USAGE_ENABLED`, `CLAUDE_CREDENTIALS_PATH` (деф. `~/.claude/.credentials.json`),
+  `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m).
+- Превью: `./bin/clock --once --fake --frame 3 --out preview_claude.jpg`.
+
 ## Статус
 
 - [x] MCP-сервер установлен, собран, зарегистрирован в `.mcp.json`.
@@ -480,4 +501,7 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 - [ ] **E2E:** прописать секреты в `.env`, проверить authByLogin→SID, схемы
       `getMarketReviews`/`getSecurityInfo`, выверить символы Brent/EUR-USD-CNY к ₽; первый
       `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`; выставить на приборе Берлин+24ч.
-- [ ] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер, systemd-юнит.
+- [x] Виджет «Лимиты Claude» (opt-in): пакет `internal/claudeusage`, 4-я страница ротации,
+      probe заголовков подтверждён вживую (см. подраздел выше). Включается `CLAUDE_USAGE_ENABLED=true`.
+- [ ] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер, systemd-юнит;
+      для виджета Claude — решить рефреш OAuth-токена на простаивающем сервере.

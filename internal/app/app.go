@@ -45,6 +45,11 @@ type QuoteTextSource interface {
 	Fetch(ctx context.Context) ([]model.Quote, error)
 }
 
+// ClaudeUsageSource fetches Claude's unified rate-limit usage (5h + weekly).
+type ClaudeUsageSource interface {
+	Fetch(ctx context.Context) (model.ClaudeUsage, error)
+}
+
 // Renderer renders a frame to JPEG bytes.
 type Renderer interface {
 	Render(snap model.Snapshot, frame int) ([]byte, error)
@@ -66,6 +71,7 @@ type Deps struct {
 	News      NewsSource
 	Quotes    QuoteSource
 	QuoteText QuoteTextSource
+	Claude    ClaudeUsageSource
 	Renderer  Renderer
 	Device    Device
 }
@@ -188,7 +194,7 @@ func (a *App) Snapshot(now time.Time) model.Snapshot { return a.store.snapshot(n
 // refreshAll fetches every source once, in parallel, before the loop starts.
 func (a *App) refreshAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, fn := range []func(context.Context){a.doWeather, a.doMarkets, a.doPortfolio, a.doNews, a.doQuoteText} {
+	for _, fn := range []func(context.Context){a.doWeather, a.doMarkets, a.doPortfolio, a.doNews, a.doQuoteText, a.doClaude} {
 		wg.Add(1)
 		go func(f func(context.Context)) {
 			defer wg.Done()
@@ -205,6 +211,7 @@ func (a *App) startFetchers(ctx context.Context) {
 	go a.periodic(ctx, a.cfg.Intervals.Portfolio, a.doPortfolio)
 	go a.periodic(ctx, a.cfg.Intervals.News, a.doNews)
 	go a.periodic(ctx, a.cfg.Intervals.Quote, a.doQuoteText)
+	go a.periodic(ctx, a.cfg.Intervals.Claude, a.doClaude)
 }
 
 func (a *App) periodic(ctx context.Context, interval time.Duration, fn func(context.Context)) {
@@ -277,6 +284,20 @@ func (a *App) doQuoteText(ctx context.Context) {
 		return
 	}
 	a.store.setQuotes(q)
+}
+
+func (a *App) doClaude(ctx context.Context) {
+	if a.deps.Claude == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	u, err := a.deps.Claude.Fetch(ctx)
+	if err != nil {
+		a.log.Warn("fetch claude usage", "err", err)
+		return
+	}
+	a.store.setClaude(u)
 }
 
 // doMarkets fetches all instrument quotes in one batch and splits them into

@@ -54,5 +54,11 @@ func SampleSnapshot(now time.Time) Snapshot {
 			{Text: "The only way to do great work is to love what you do.", Author: "Steve Jobs"},
 			{Text: "Risk comes from not knowing what you are doing.", Author: "Warren Buffett"},
 		},
+		Claude: ClaudeUsage{
+			Updated: now,
+			Block5h: ClaudeWindow{Utilization: 0.33, ResetAt: now.Add(2*time.Hour + 13*time.Minute)},
+			Weekly:  ClaudeWindow{Utilization: 0.71, ResetAt: now.Add(5 * 24 * time.Hour)},
+			Valid:   true,
+		},
 	}
 }

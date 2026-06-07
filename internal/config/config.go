@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type Config struct {
 	Freedom   Freedom
 	Favqs     Favqs
 	Weather   Weather
+	Claude    Claude
 	Intervals Intervals
 	ClockTZ   string
 	LogLevel  string
@@ -59,6 +61,19 @@ type Weather struct {
 	TZ   string
 }
 
+// Claude holds settings for the optional Claude-usage widget. When enabled, the
+// service reads the Claude Code OAuth token from CredentialsPath and probes the
+// Anthropic API to read the unified rate-limit headers — the same 5-hour and
+// weekly windows shown by Claude Code's /usage. This relies on the subscription
+// OAuth token and undocumented response headers, so it is opt-in (off by
+// default) and each poll consumes a negligible amount of the reported quota.
+type Claude struct {
+	Enabled         bool
+	CredentialsPath string
+	Model           string
+	APIURL          string
+}
+
 // Intervals controls refresh cadence and frame rotation.
 type Intervals struct {
 	Frame     time.Duration
@@ -67,6 +82,7 @@ type Intervals struct {
 	Portfolio time.Duration
 	News      time.Duration
 	Quote     time.Duration
+	Claude    time.Duration
 }
 
 // HasFreedom reports whether Freedom24 credentials are present.
@@ -74,6 +90,10 @@ func (c Config) HasFreedom() bool { return c.Freedom.Login != "" && c.Freedom.Pa
 
 // HasFavqs reports whether a favqs token is present.
 func (c Config) HasFavqs() bool { return c.Favqs.Token != "" }
+
+// HasClaude reports whether the Claude-usage widget is enabled and has a
+// credentials path to read the OAuth token from.
+func (c Config) HasClaude() bool { return c.Claude.Enabled && c.Claude.CredentialsPath != "" }
 
 // Load reads the configuration from the environment, applying defaults and
 // validating every value. It returns the joined set of all problems found.
@@ -114,6 +134,12 @@ func Load() (Config, error) {
 			City: env("WEATHER_CITY", "Гамбург"),
 			TZ:   env("WEATHER_TZ", "Europe/Berlin"),
 		},
+		Claude: Claude{
+			Enabled:         getb("CLAUDE_USAGE_ENABLED", false),
+			CredentialsPath: env("CLAUDE_CREDENTIALS_PATH", defaultClaudeCredentialsPath()),
+			Model:           env("CLAUDE_USAGE_MODEL", "claude-haiku-4-5-20251001"),
+			APIURL:          env("CLAUDE_API_URL", "https://api.anthropic.com"),
+		},
 		Intervals: Intervals{
 			Frame:     getd("FRAME_INTERVAL", 13*time.Second),
 			Weather:   getd("WEATHER_INTERVAL", 10*time.Minute),
@@ -121,6 +147,7 @@ func Load() (Config, error) {
 			Portfolio: getd("PORTFOLIO_INTERVAL", 90*time.Second),
 			News:      getd("NEWS_INTERVAL", 5*time.Minute),
 			Quote:     getd("QUOTE_INTERVAL", 30*time.Minute),
+			Claude:    getd("CLAUDE_USAGE_INTERVAL", 5*time.Minute),
 		},
 		ClockTZ:  env("CLOCK_TZ", "Europe/Berlin"),
 		LogLevel: env("LOG_LEVEL", "info"),
@@ -146,12 +173,13 @@ func (c Config) validate() []error {
 	add(c.Device.Timeout > 0, "DIVOOM_TIMEOUT_MS must be > 0")
 
 	for name, d := range map[string]time.Duration{
-		"FRAME_INTERVAL":     c.Intervals.Frame,
-		"WEATHER_INTERVAL":   c.Intervals.Weather,
-		"MARKETS_INTERVAL":   c.Intervals.Markets,
-		"PORTFOLIO_INTERVAL": c.Intervals.Portfolio,
-		"NEWS_INTERVAL":      c.Intervals.News,
-		"QUOTE_INTERVAL":     c.Intervals.Quote,
+		"FRAME_INTERVAL":        c.Intervals.Frame,
+		"WEATHER_INTERVAL":      c.Intervals.Weather,
+		"MARKETS_INTERVAL":      c.Intervals.Markets,
+		"PORTFOLIO_INTERVAL":    c.Intervals.Portfolio,
+		"NEWS_INTERVAL":         c.Intervals.News,
+		"QUOTE_INTERVAL":        c.Intervals.Quote,
+		"CLAUDE_USAGE_INTERVAL": c.Intervals.Claude,
 	} {
 		add(d > 0, name+" must be > 0")
 	}
@@ -168,7 +196,25 @@ func (c Config) validate() []error {
 	if u, err := url.Parse(c.Freedom.APIURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		errs = append(errs, fmt.Errorf("FREEDOM_API_URL must be an http(s) URL, got %q", c.Freedom.APIURL))
 	}
+	if c.Claude.Enabled {
+		add(c.Claude.CredentialsPath != "", "CLAUDE_CREDENTIALS_PATH must not be empty when CLAUDE_USAGE_ENABLED=true (could not resolve a default; set it explicitly)")
+		add(c.Claude.Model != "", "CLAUDE_USAGE_MODEL must not be empty when CLAUDE_USAGE_ENABLED=true")
+		if u, err := url.Parse(c.Claude.APIURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("CLAUDE_API_URL must be an http(s) URL, got %q", c.Claude.APIURL))
+		}
+	}
 	return errs
+}
+
+// defaultClaudeCredentialsPath returns the standard Claude Code credentials
+// file path (~/.claude/.credentials.json), or "" when the home directory
+// cannot be resolved (in which case CLAUDE_CREDENTIALS_PATH must be set).
+func defaultClaudeCredentialsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", ".credentials.json")
 }
 
 func env(key, def string) string {

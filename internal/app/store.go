@@ -18,6 +18,7 @@ type store struct {
 	fx        []model.Instrument
 	news      []model.NewsItem
 	quotes    []model.Quote
+	claude    model.ClaudeUsage
 }
 
 func newStore() *store { return &store{} }
@@ -54,6 +55,12 @@ func (s *store) setQuotes(q []model.Quote) {
 	s.mu.Unlock()
 }
 
+func (s *store) setClaude(u model.ClaudeUsage) {
+	s.mu.Lock()
+	s.claude = u
+	s.mu.Unlock()
+}
+
 // snapshot returns an immutable copy of the current data for one frame.
 func (s *store) snapshot(now time.Time) model.Snapshot {
 	s.mu.RLock()
@@ -67,5 +74,6 @@ func (s *store) snapshot(now time.Time) model.Snapshot {
 		FX:        append([]model.Instrument(nil), s.fx...),
 		News:      append([]model.NewsItem(nil), s.news...),
 		Quotes:    append([]model.Quote(nil), s.quotes...),
+		Claude:    s.claude,
 	}
 }

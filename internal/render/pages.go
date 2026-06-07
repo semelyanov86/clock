@@ -1,7 +1,9 @@
 package render
 
 import (
+	"math"
 	"strconv"
+	"time"
 
 	"github.com/fogleman/gg"
 
@@ -146,6 +148,46 @@ func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrumen
 	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-42, 0, fontMono, 28, theme.text)
 	col := deltaColor(fx.Delta)
 	r.text(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-14, 0, fontBold, 20, col)
+}
+
+// pageClaude shows Claude's unified rate-limit usage: the rolling 5-hour block
+// and the weekly window, each as a labelled gauge. The page only appears when
+// the data is present (see Render).
+func (r *Renderer) pageClaude(dc *gg.Context, snap model.Snapshot, area rect) {
+	y := r.sectionTitle(dc, area, "ЛИМИТЫ CLAUDE")
+	u := snap.Claude
+	if !u.Valid {
+		r.text(dc, "нет данных", area.x+area.w/2, y+60, 0.5, fontRegular, 24, theme.muted)
+		return
+	}
+
+	now := snap.Generated.In(r.loc)
+	const gaugeH = 156
+	r.usageGauge(dc, area.x, y, area.w, gaugeH, "5 ЧАСОВ", u.Block5h, now)
+	y += gaugeH + 18
+	r.usageGauge(dc, area.x, y, area.w, gaugeH, "НЕДЕЛЯ", u.Weekly, now)
+	y += gaugeH + 14
+
+	if !u.Updated.IsZero() {
+		r.text(dc, "обновлено "+u.Updated.In(r.loc).Format("15:04"), area.x+area.w-6, y+8, 1, fontRegular, 18, theme.muted)
+	}
+}
+
+// usageGauge draws one labelled rate-limit window: title, big percentage,
+// progress bar, and a reset countdown.
+func (r *Renderer) usageGauge(dc *gg.Context, x, y, w, h float64, title string, win model.ClaudeWindow, now time.Time) {
+	fillPanel(dc, x, y, w, h, 18)
+	col := usageColor(win.Utilization)
+
+	r.text(dc, title, x+24, y+38, 0, fontBold, 26, theme.accent)
+	pct := strconv.Itoa(int(math.Round(win.Utilization*100))) + "%"
+	r.text(dc, pct, x+w-24, y+46, 1, fontBold, 56, col)
+
+	drawPercentageBar(dc, x+24, y+82, w-48, 22, win.Utilization, col)
+
+	if s := humanizeUntil(now, win.ResetAt); s != "" {
+		r.text(dc, s, x+24, y+h-26, 0, fontRegular, 21, theme.muted)
+	}
 }
 
 func (r *Renderer) pageInfo(dc *gg.Context, snap model.Snapshot, frame int, area rect) {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/semelyanov86/clock/internal/app"
+	"github.com/semelyanov86/clock/internal/claudeusage"
 	"github.com/semelyanov86/clock/internal/config"
 	"github.com/semelyanov86/clock/internal/divoom"
 	"github.com/semelyanov86/clock/internal/favqs"
@@ -88,6 +89,14 @@ func wire(cfg config.Config, log *slog.Logger, rnd *render.Renderer) app.Deps {
 	deps.QuoteText = favqs.New(cfg.Favqs.Token, httpTimeout)
 	if !cfg.HasFavqs() {
 		log.Warn("FAVQS_API_TOKEN not set; falling back to quote-of-the-day (English)")
+	}
+
+	if cfg.HasClaude() {
+		deps.Claude = claudeusage.New(cfg.Claude.CredentialsPath, httpTimeout,
+			claudeusage.WithBaseURL(cfg.Claude.APIURL), claudeusage.WithModel(cfg.Claude.Model))
+		log.Info("Claude usage widget enabled", "credentials", cfg.Claude.CredentialsPath, "model", cfg.Claude.Model)
+	} else {
+		log.Info("Claude usage widget disabled (set CLAUDE_USAGE_ENABLED=true to enable)")
 	}
 
 	if cfg.HasFreedom() {
