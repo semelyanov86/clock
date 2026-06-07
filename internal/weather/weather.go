@@ -97,7 +97,7 @@ func (c *Client) Fetch(ctx context.Context) (model.Weather, error) {
 	if err != nil {
 		return model.Weather{}, fmt.Errorf("fetch weather: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {

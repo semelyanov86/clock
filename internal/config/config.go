@@ -46,6 +46,10 @@ type Freedom struct {
 	BrentSymbol string
 	FXSymbols   []string
 	LogBodies   bool // when true, debug-log raw response bodies (SID redacted) for E2E
+	// ViewOnly authenticates in read-only mode (cannot trade). Safe default, but
+	// Tradernet then withholds the per-position portfolio breakdown — only a full
+	// session returns positions (the service still never sends trade commands).
+	ViewOnly bool
 }
 
 // Favqs holds the favqs.com API token.
@@ -123,9 +127,10 @@ func Load() (Config, error) {
 			Password:    env("FREEDOM_PASSWORD", ""),
 			UserID:      env("FREEDOM_USER_ID", ""),
 			ETFSymbols:  envList("FREEDOM_ETF_SYMBOLS", "XEON.EU,IQQ0.EU,VUAA.EU,IGLN.EU"),
-			BrentSymbol: env("FREEDOM_BRENT_SYMBOL", "BRN.NYMEX"),
-			FXSymbols:   envList("FREEDOM_FX_SYMBOLS", "EUR/RUB,USD/RUB,CNY/RUB"),
+			BrentSymbol: env("FREEDOM_BRENT_SYMBOL", "BRNT.EU"),
+			FXSymbols:   envList("FREEDOM_FX_SYMBOLS", "EUR/RUR,USD/RUR,CNY/RUR"),
 			LogBodies:   getb("FREEDOM_LOG_BODIES", false),
+			ViewOnly:    getb("FREEDOM_VIEW_ONLY", false),
 		},
 		Favqs: Favqs{Token: env("FAVQS_API_TOKEN", "")},
 		Weather: Weather{

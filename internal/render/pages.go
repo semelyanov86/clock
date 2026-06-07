@@ -81,7 +81,11 @@ func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect)
 		fillPanel(dc, area.x, ry, area.w, ih, 14)
 
 		r.text(dc, pos.Symbol, area.x+24, ry+34, 0, fontBold, 30, theme.text)
-		name := r.fit(dc, pos.Name, fontRegular, 20, 340)
+		label := pos.Name
+		if pos.Qty > 0 {
+			label = strconv.FormatFloat(pos.Qty, 'f', -1, 64) + " × " + pos.Name
+		}
+		name := r.fit(dc, label, fontRegular, 20, 340)
 		r.text(dc, name, area.x+24, ry+62, 0, fontRegular, 20, theme.muted)
 
 		r.text(dc, formatMoney(pos.Value, pos.Currency, 2), area.x+area.w-24, ry+34, 1, fontMono, 28, theme.text)
@@ -90,7 +94,11 @@ func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect)
 		// Allocation meter: this holding's share of the total portfolio value —
 		// a glanceable sense of weighting, drawn as an underline along the row.
 		if p.TotalValue > 0 {
-			frac := math.Min(pos.Value/p.TotalValue, 1)
+			frac := pos.Weight
+			if frac <= 0 {
+				frac = pos.Value / p.TotalValue
+			}
+			frac = math.Min(frac, 1)
 			barY := ry + ih - 16
 			barW := 330.0
 			dc.SetColor(withAlpha(theme.stroke, 0.7))

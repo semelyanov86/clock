@@ -308,10 +308,16 @@ Go 1.25.1 и `task` (go-task) 3.51.1.
 - **Freedom24 / Tradernet API** — REST/WebSocket/FIX. Доки:
   https://freedom24.com/tradernet-api . Есть Python SDK и community PHP SDK
   (`MasyaSmv/freedom-broker-api`).
-  - **Авторизация ТОЛЬКО в read-only режиме (обязательно).** Команда `authByLogin`
-    с параметром **`viewOnlyMode: true`** — «авторизация только в режиме просмотра
-    аккаунта». Циферблат лишь **читает** портфель/котировки и НИКОГДА не торгует, поэтому
-    сессия не должна иметь прав на сделки. Пример запроса:
+  - **Сессия только читает, НИКОГДА не торгует.** Код шлёт исключительно read-команды
+    (`getUserPositions`, `getSecurityInfo`, `getMarketReviews`) и не отправляет торговых
+    приказов. Режим авторизации управляется `FREEDOM_VIEW_ONLY` (опция `WithViewOnly`).
+    > **РЕШЕНО на E2E (2026-06-07): по умолчанию `FREEDOM_VIEW_ONLY=false` (полная сессия).**
+    > В режиме `viewOnlyMode:true` Tradernet **скрывает детализацию портфеля** —
+    > `getUserPositions`/`getOPQ` возвращают пустой `pos[]`, а агрегат (`portfolioValue`/
+    > `Stotal` ≈ €1230) — это НЕ настоящий баланс (реальный ≈ €11 760). Позиции и верный
+    > тотал приходят только в полной сессии. Согласовано с пользователем: показывать
+    > позиции важнее, безопасность обеспечена тем, что сервис не торгует.
+    Пример запроса:
 
     ```json
     {
@@ -319,7 +325,7 @@ Go 1.25.1 и `task` (go-task) 3.51.1.
       "params": {
         "login": "user@example.com",
         "password": "***",
-        "viewOnlyMode": true,
+        "viewOnlyMode": false,
         "rememberMe": 1,
         "getAccounts": false,
         "userId": 1234
@@ -375,7 +381,7 @@ Go 1.25.1 и `task` (go-task) 3.51.1.
 │   ├── divoom/               # LAN-клиент устройства: JSON (/divoom_api) + multipart (create/replace)
 │   ├── weather/              # Open-Meteo (без ключа)
 │   ├── favqs/                # favqs.com (цитаты, англ.)
-│   ├── freedom/              # Tradernet сессия: authByLogin(viewOnly)→SID; getOPQ, getMarketReviews, getSecurityInfo
+│   ├── freedom/              # Tradernet сессия: authByLogin→SID; getUserPositions, getMarketReviews, getSecurityInfo
 │   ├── claudeusage/          # лимиты Claude (/usage): OAuth-токен → unified rate-limit заголовки
 │   ├── render/               # рендер 800×1280 → JPEG; fonts/*.ttf встроены через go:embed
 │   └── app/                  # снапшот-стор + планировщик фетчеров + кадровый цикл + пуш
@@ -429,19 +435,25 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
   `cycleIndex(frame, …)`), без animated WebP.
 - **Динамика везде:** ▲ зелёный рост / ▼ красный падёж.
 
-**Freedom24 / Tradernet — подтверждённая схема (по офиц. докам, через headless-браузер):**
+**Freedom24 / Tradernet — схема, ВЫВЕРЕННАЯ вживую (E2E 2026-06-07):**
 - Транспорт: HTTPS POST, поле формы `q = JSON.stringify({cmd, SID, params})`. Gateway —
-  `https://tradernet.com/api` (`FREEDOM_API_URL`; `freedom24.com/api` тоже принимает).
-- `authByLogin` (`viewOnlyMode:true`, `rememberMe:1`) → ответ `{"success":true,"logged":true,
-  "SID":"…","userId":…}`; **SID кладётся в `q` каждого последующего запроса** (cookie-jar тоже
-  держим). Ошибки: `{"error"/"errMsg":…, "code":N}` (code≠0 — провал; пример: 2 bad json, 7 user
-  not found). Поток `getAccounts:true` → выбрать `userId` → повторный auth.
-- `getOPQ` → корень **`OPQ.ps.pos[]` / `OPQ.ps.acc[]`**, `OPQ.homeCurrency`. Позиция: `i`
-  тикер, `q` кол-во, `market_value`/`s` стоимость, `mkt_price` цена, **`close_price` пред.
-  закрытие** (дневная динамика = `(mkt_price−close_price)·q`), `profit_close` P&L, `curr`,
-  `currval`, `name`/`name2`. Числа парсятся `flexFloat` (число/строка).
-- `getMarketReviews` (новости) и `getSecurityInfo` (котировки) — схемы ответов не
-  задокументированы; парсинг defensive, сырые ответы логируются на `LOG_LEVEL=debug`.
+  `https://tradernet.com/api`. **Gateway за Cloudflare:** дефолтный Go `User-Agent` → HTTP 403.
+  Клиент ОБЯЗАТЕЛЬНО шлёт браузерный `User-Agent` + `Accept` (иначе всё отбивается 403).
+- `authByLogin` (`viewOnlyMode` из `FREEDOM_VIEW_ONLY`, `rememberMe:1`) → `{"success":true,
+  "logged":true,"SID":"…","userId":…}`; **SID в `q` каждого запроса** (cookie-jar тоже держим).
+  `userId` из ответа захватывается для `requestedUserId`. Ошибки: `{"error"/"errMsg":…,"code":N}`.
+- **Портфель — `getUserPositions`** (`params:{requestedUserId}`), НЕ getOPQ (getOPQ в view-only
+  отдаёт пустой `pos[]`). Корень: `pos[]`, `acc[]` (кэш), `money_detailed`, `net_assets`. Позиция:
+  `i` тикер, `q` кол-во, `market_value` (в валюте позиции), `mkt_price`, **`close_price`** пред.
+  закрытие (дневная динамика = `(mkt_price−close_price)·q`), `bal_price_a` средняя цена покупки,
+  `profit_close` ОБЩИЙ P&L, **`open_bal`** (=0 → бесплатная бонусная акция, отфильтровываем),
+  `curr`/`base_currency`, **`currval`** = валюта→RUB. Тотал считаем в EUR (через `currval`/EUR-RUB).
+  ⚠️ только в полной сессии (см. `FREEDOM_VIEW_ONLY` выше).
+- `getSecurityInfo` (котировки, **без авторизации**): цена = `ltp`, пред.закрытие = `ClosePrice`,
+  валюта = `base_currency`. **`pcp` нет, `chg` ненадёжен** → дельту считаем из `ltp−ClosePrice`.
+  Символы: рубль = **RUR** (`EUR/RUR` и т.п.), Brent-прокси = **`BRNT.EU`** (прямого бенчмарка нет;
+  поиск тикеров — команда `tickerFinder`).
+- `getMarketReviews` (новости) → `list[]` с `title`/`date`. favqs + Open-Meteo — ок.
 
 **Запуск:**
 - `task preview` — 3 страницы на фейковых данных → `preview_*.jpg` (без сети/устройства).
@@ -494,13 +506,15 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
 - [x] `Taskfile.yml` создан (`task ssh` + Go-loop + preview + push + deploy).
 - [x] Архитектура Go-сервиса согласована и реализована (`go.mod`, `cmd/clock`, `internal/*`).
 - [x] Дизайн циферблата согласован (гибрид) и отрендерен (превью проверены).
-- [x] Интеграция Freedom24 — код написан по подтверждённой схеме `getOPQ`/`authByLogin`
-      (live-выверка `getMarketReviews`/`getSecurityInfo` и символов — на E2E).
+- [x] Интеграция Freedom24 — **выверена вживую (E2E 2026-06-07):** WAF-фикс (браузерный UA),
+      `getUserPositions` вместо getOPQ, дельта из `ltp−ClosePrice`, символы RUR/`BRNT.EU`,
+      фильтр бонусных акций (`open_bal=0`), полная сессия (`FREEDOM_VIEW_ONLY=false`).
 - [x] Интеграция погоды (Open-Meteo) + favqs (цитаты) + unit-тесты (httptest, `-race`).
 - [x] Рендер/пуш циферблата реализованы (multipart 1-в-1 по firmware, тесты).
-- [ ] **E2E:** прописать секреты в `.env`, проверить authByLogin→SID, схемы
-      `getMarketReviews`/`getSecurityInfo`, выверить символы Brent/EUR-USD-CNY к ₽; первый
-      `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`; выставить на приборе Берлин+24ч.
+- [x] **E2E данных:** все 4 страницы отрендерены на реальных данных (`live_*.jpg`), баланс
+      €11 760 + позиции, рынки, погода, новости, цитата, лимиты Claude — всё корректно.
+- [ ] **E2E устройства:** первый `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`;
+      выставить на приборе Берлин+24ч. (изображения в часы пока НЕ отправлялись.)
 - [x] Виджет «Лимиты Claude» (opt-in): пакет `internal/claudeusage`, 4-я страница ротации,
       probe заголовков подтверждён вживую (см. подраздел выше). Включается `CLAUDE_USAGE_ENABLED=true`.
 - [ ] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер, systemd-юнит;

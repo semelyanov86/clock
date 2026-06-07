@@ -338,12 +338,20 @@ func (a *App) doMarkets(ctx context.Context) {
 	fx := make([]model.Instrument, 0, len(a.cfg.Freedom.FXSymbols))
 	for _, sym := range a.cfg.Freedom.FXSymbols {
 		if inst, ok := quotes[sym]; ok {
+			inst.Symbol = fxDisplay(sym)
 			inst.Name = fxName(sym)
 			inst.Currency = "₽"
 			fx = append(fx, inst)
 		}
 	}
 	a.store.setMarkets(etfs, brent, fx)
+}
+
+// fxDisplay normalises a Tradernet FX pair for the card title. The API quotes
+// the ruble under its legacy ISO code RUR (e.g. EUR/RUR); the familiar label is
+// RUB, so the title shows RUB while the request keeps the API's RUR symbol.
+func fxDisplay(pair string) string {
+	return strings.ReplaceAll(strings.ToUpper(pair), "RUR", "RUB")
 }
 
 // fxName maps a currency pair to a Russian label.

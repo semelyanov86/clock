@@ -44,6 +44,7 @@ type Client struct {
 	httpc     *http.Client
 	log       *slog.Logger
 	logBodies bool
+	viewOnly  bool
 
 	authMu sync.Mutex // serialises authByLogin so concurrent fetchers issue one login
 	mu     sync.Mutex
@@ -52,6 +53,12 @@ type Client struct {
 
 // maxResponseBytes caps a single API response to guard against runaway reads.
 const maxResponseBytes = 4 << 20
+
+// userAgent is a browser-like User-Agent. The Tradernet gateway sits behind a
+// WAF (Cloudflare) that returns HTTP 403 to the default Go User-Agent, so every
+// request must present a realistic browser identity.
+const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+	"(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 // Option customises a Client.
 type Option func(*Client)
@@ -63,6 +70,12 @@ func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.httpc = 
 // redacted. Off by default so portfolio/account data and session ids are not
 // written to logs unless explicitly requested for E2E debugging.
 func WithBodyLogging(on bool) Option { return func(c *Client) { c.logBodies = on } }
+
+// WithViewOnly sets the authByLogin viewOnlyMode flag. View-only is the safe
+// default (the session cannot trade), but Tradernet then returns no per-position
+// portfolio breakdown; pass false to receive positions (reads only — the client
+// never issues trade commands).
+func WithViewOnly(on bool) Option { return func(c *Client) { c.viewOnly = on } }
 
 // New returns a Freedom24 client. apiURL defaults to DefaultAPIURL when empty.
 func New(login, password, userID, apiURL string, timeout time.Duration, log *slog.Logger, opts ...Option) (*Client, error) {
@@ -83,6 +96,7 @@ func New(login, password, userID, apiURL string, timeout time.Duration, log *slo
 		baseURL:  strings.TrimRight(apiURL, "/"),
 		httpc:    &http.Client{Timeout: timeout, Jar: jar},
 		log:      log,
+		viewOnly: true, // safe default; WithViewOnly(false) opts into positions
 	}
 	for _, o := range opts {
 		o(c)
@@ -114,12 +128,14 @@ func (c *Client) call(ctx context.Context, cmd string, params map[string]any) (j
 		return nil, fmt.Errorf("new %s request: %w", cmd, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cmd, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
@@ -141,7 +157,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 	params := map[string]any{
 		"login":        c.login,
 		"password":     c.password,
-		"viewOnlyMode": true,
+		"viewOnlyMode": c.viewOnly,
 		"rememberMe":   1,
 		"getAccounts":  false,
 	}
@@ -162,6 +178,15 @@ func (c *Client) authenticate(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.sid = sid
+	// Capture the resolved user id (for getUserPositions) when not configured.
+	if c.userID == "" {
+		var r struct {
+			UserID json.Number `json:"userId"`
+		}
+		if json.Unmarshal(raw, &r) == nil && r.UserID.String() != "" {
+			c.userID = r.UserID.String()
+		}
+	}
 	c.mu.Unlock()
 	return nil
 }
@@ -209,15 +234,32 @@ func (c *Client) reauth(ctx context.Context) error {
 	return c.authenticate(ctx)
 }
 
-// Portfolio reads the account positions and balances via getOPQ.
+// Portfolio reads the account positions and balances via getUserPositions. It
+// returns the full per-position breakdown (which view-only getOPQ omits) plus
+// cash balances, keyed to the session's user id.
 func (c *Client) Portfolio(ctx context.Context) (model.Portfolio, error) {
 	raw, err := c.withSession(ctx, func(ctx context.Context) (json.RawMessage, error) {
-		return c.call(ctx, "getOPQ", map[string]any{})
+		return c.call(ctx, "getUserPositions", c.positionsParams())
 	})
 	if err != nil {
 		return model.Portfolio{}, err
 	}
-	return parsePortfolio(raw)
+	return parseUserPositions(raw)
+}
+
+// positionsParams builds the getUserPositions params, scoping the request to the
+// resolved user id when one is known.
+func (c *Client) positionsParams() map[string]any {
+	c.mu.Lock()
+	uid := c.userID
+	c.mu.Unlock()
+	if uid == "" {
+		return map[string]any{}
+	}
+	if n, err := strconv.Atoi(uid); err == nil {
+		return map[string]any{"requestedUserId": n}
+	}
+	return map[string]any{"requestedUserId": uid}
 }
 
 // News reads up to n market-review headlines via getMarketReviews.

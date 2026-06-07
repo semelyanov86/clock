@@ -121,7 +121,7 @@ func (c *Client) do(req *http.Request, what string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {

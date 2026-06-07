@@ -140,7 +140,10 @@ type Instrument struct {
 	Delta    Delta
 }
 
-// Position is a single holding in the portfolio.
+// Position is a single holding in the portfolio. Value/Delta are in the
+// position's own currency (for the card); Weight is its share of the total
+// portfolio value (0..1), precomputed in the home currency so the allocation
+// bar is correct even when holdings span several currencies.
 type Position struct {
 	Symbol   string
 	Name     string
@@ -148,6 +151,7 @@ type Position struct {
 	Value    float64
 	Currency string
 	Delta    Delta
+	Weight   float64
 }
 
 // Portfolio is the account summary plus its positions.

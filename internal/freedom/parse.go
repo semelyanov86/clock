@@ -88,83 +88,114 @@ func looksUnauthorized(raw json.RawMessage) bool {
 	return false
 }
 
-type opqPos struct {
+// userPos is one holding from getUserPositions. Values are in the position's
+// own currency (curr/base_currency); currval converts that currency to RUB.
+type userPos struct {
 	Ticker      string    `json:"i"`
 	Name        string    `json:"name"`
 	Name2       string    `json:"name2"`
 	Qty         flexFloat `json:"q"`
-	S           flexFloat `json:"s"`            // value converted to home currency
 	MarketValue flexFloat `json:"market_value"` // value in the position currency
 	MktPrice    flexFloat `json:"mkt_price"`    // current price
 	ClosePrice  flexFloat `json:"close_price"`  // previous close (for daily change)
-	ProfitClose flexFloat `json:"profit_close"` // total P&L since opening
+	OpenBal     flexFloat `json:"open_bal"`     // cost basis; 0 ⇒ free bonus share
 	Curr        string    `json:"curr"`
-	CurrVal     flexFloat `json:"currval"` // position currency → home rate
+	BaseCurr    string    `json:"base_currency"`
+	CurrVal     flexFloat `json:"currval"` // position currency → RUB rate
 }
 
-type opqAcc struct {
+// userAcc is one cash balance from getUserPositions.
+type userAcc struct {
 	Curr    string    `json:"curr"`
-	S       flexFloat `json:"s"`
+	S       flexFloat `json:"s"` // cash amount in curr
 	CurrVal flexFloat `json:"currval"`
 }
 
-type opqResponse struct {
-	OPQ struct {
-		Ps struct {
-			Pos []opqPos `json:"pos"`
-			Acc []opqAcc `json:"acc"`
-		} `json:"ps"`
-		HomeCurrency string `json:"homeCurrency"`
-	} `json:"OPQ"`
+type userPositionsResponse struct {
+	Pos    []userPos `json:"pos"`
+	Acc    []userAcc `json:"acc"`
+	Error  string    `json:"error"`
+	ErrMsg string    `json:"errMsg"`
 }
 
-func parsePortfolio(raw json.RawMessage) (model.Portfolio, error) {
-	var r opqResponse
+// parseUserPositions builds the portfolio from a getUserPositions response.
+// Holdings are mixed-currency (EUR/USD), so each is converted to the home
+// currency (EUR) via its currval (→RUB) and the EUR→RUB rate to compute the
+// total, the day change, and each position's weight. Per-position cards keep the
+// instrument's own currency. Free bonus shares (open_bal=0) are dropped.
+func parseUserPositions(raw json.RawMessage) (model.Portfolio, error) {
+	var r userPositionsResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return model.Portfolio{}, fmt.Errorf("decode getOPQ: %w", err)
+		return model.Portfolio{}, fmt.Errorf("decode getUserPositions: %w", err)
 	}
-	ps := r.OPQ.Ps
+	if msg := firstNonEmpty(r.Error, r.ErrMsg); msg != "" {
+		return model.Portfolio{}, errors.New(msg)
+	}
 
-	var total, totalDelta float64
-	positions := make([]model.Position, 0, len(ps.Pos))
-	for _, p := range ps.Pos {
-		qty := float64(p.Qty)
-		mv := float64(p.MarketValue)
-		if mv == 0 {
-			mv = float64(p.MktPrice) * qty
+	// EUR→RUB rate, taken from any EUR-denominated holding or cash balance.
+	eurRub := 1.0
+	for _, p := range r.Pos {
+		if strings.EqualFold(p.Curr, "EUR") && p.CurrVal != 0 {
+			eurRub = float64(p.CurrVal)
+			break
 		}
-		// Daily change from previous close.
+	}
+	if eurRub == 1.0 {
+		for _, a := range r.Acc {
+			if strings.EqualFold(a.Curr, "EUR") && a.CurrVal != 0 {
+				eurRub = float64(a.CurrVal)
+				break
+			}
+		}
+	}
+
+	type valued struct {
+		pos model.Position
+		eur float64
+	}
+	rows := make([]valued, 0, len(r.Pos))
+	var total, totalDelta float64
+	for _, p := range r.Pos {
+		if float64(p.OpenBal) == 0 {
+			continue // free bonus share — no cost basis, hide it
+		}
+		qty := float64(p.Qty)
+		valOwn := float64(p.MarketValue)
+		if valOwn == 0 {
+			valOwn = float64(p.MktPrice) * qty
+		}
 		var dayAbs, dayPct float64
 		if c := float64(p.ClosePrice); c != 0 {
 			dayAbs = (float64(p.MktPrice) - c) * qty
 			dayPct = (float64(p.MktPrice) - c) / c * 100
-		} else {
-			dayAbs = float64(p.ProfitClose)
 		}
-		positions = append(positions, model.Position{
-			Symbol:   p.Ticker,
-			Name:     firstNonEmpty(p.Name2, p.Name, p.Ticker),
-			Qty:      qty,
-			Value:    mv,
-			Currency: currencySymbol(p.Curr),
-			Delta:    model.Delta{Abs: dayAbs, Pct: dayPct},
+		rate := nonZero(float64(p.CurrVal), eurRub) // position currency → RUB
+		rows = append(rows, valued{
+			pos: model.Position{
+				Symbol:   p.Ticker,
+				Name:     firstNonEmpty(p.Name2, p.Name, p.Ticker),
+				Qty:      qty,
+				Value:    valOwn,
+				Currency: currencySymbol(firstNonEmpty(p.Curr, p.BaseCurr)),
+				Delta:    model.Delta{Abs: dayAbs, Pct: dayPct},
+			},
+			eur: valOwn * rate / eurRub,
 		})
+		total += valOwn * rate / eurRub
+		totalDelta += dayAbs * rate / eurRub
+	}
+	for _, a := range r.Acc {
+		total += float64(a.S) * nonZero(float64(a.CurrVal), eurRub) / eurRub
+	}
 
-		// Totals in home currency.
-		homeValue := float64(p.S)
-		if homeValue == 0 {
-			homeValue = mv * nonZero(float64(p.CurrVal), 1)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].eur > rows[j].eur })
+	positions := make([]model.Position, 0, len(rows))
+	for _, rw := range rows {
+		if total > 0 {
+			rw.pos.Weight = rw.eur / total
 		}
-		total += homeValue
-		totalDelta += dayAbs * nonZero(float64(p.CurrVal), 1)
+		positions = append(positions, rw.pos)
 	}
-	for _, a := range ps.Acc {
-		total += float64(a.S) * nonZero(float64(a.CurrVal), 1)
-	}
-
-	sort.SliceStable(positions, func(i, j int) bool {
-		return positions[i].Value > positions[j].Value
-	})
 
 	totalPct := 0.0
 	if base := total - totalDelta; base != 0 {
@@ -173,7 +204,7 @@ func parsePortfolio(raw json.RawMessage) (model.Portfolio, error) {
 
 	return model.Portfolio{
 		TotalValue:    total,
-		TotalCurrency: currencySymbol(r.OPQ.HomeCurrency),
+		TotalCurrency: "€",
 		TotalDelta:    model.Delta{Abs: totalDelta, Pct: totalPct},
 		Positions:     positions,
 	}, nil
@@ -253,18 +284,25 @@ func asArray(v json.RawMessage) []json.RawMessage {
 	return arr
 }
 
+// secInfo maps the getSecurityInfo fields we need. Confirmed against live
+// responses (XEON.EU, VUAA.EU, EUR/RUR, …): the last trade price is `ltp`, the
+// previous close is `ClosePrice`, and the trading currency is `base_currency`.
+// There is no `pcp` (percent) field, and `chg` is inconsistent across
+// instrument types, so the daily change is computed from ltp vs ClosePrice.
 type secInfo struct {
-	C     string    `json:"c"`
-	Name  string    `json:"name"`
-	Name2 string    `json:"name2"`
-	Short string    `json:"short_name"`
-	Ltp   flexFloat `json:"ltp"`
-	L     flexFloat `json:"l"`
-	Last  flexFloat `json:"last"`
-	Chg   flexFloat `json:"chg"`
-	Pcp   flexFloat `json:"pcp"`
-	Curr  string    `json:"curr"`
-	XCurr string    `json:"x_curr"`
+	C            string    `json:"c"`
+	Name         string    `json:"name"`
+	Name2        string    `json:"name2"`
+	Short        string    `json:"short_name"`
+	Ltp          flexFloat `json:"ltp"`
+	L            flexFloat `json:"l"`
+	Last         flexFloat `json:"last"`
+	Chg          flexFloat `json:"chg"`
+	Pcp          flexFloat `json:"pcp"`
+	ClosePrice   flexFloat `json:"ClosePrice"`
+	Curr         string    `json:"curr"`
+	XCurr        string    `json:"x_curr"`
+	BaseCurrency string    `json:"base_currency"`
 }
 
 func parseQuote(symbol string, raw json.RawMessage) (model.Instrument, bool) {
@@ -288,12 +326,24 @@ func parseQuote(symbol string, raw json.RawMessage) (model.Instrument, bool) {
 	if last == 0 {
 		return model.Instrument{}, false
 	}
+
+	// Daily change from the previous close — consistent across ETFs and FX.
+	// Fall back to the API's own `chg`/`pcp` only when ClosePrice is absent.
+	var delta model.Delta
+	if prevClose := float64(s.ClosePrice); prevClose != 0 {
+		delta.Abs = last - prevClose
+		delta.Pct = delta.Abs / prevClose * 100
+	} else {
+		delta.Abs = float64(s.Chg)
+		delta.Pct = float64(s.Pcp)
+	}
+
 	return model.Instrument{
 		Symbol:   symbol,
 		Name:     firstNonEmpty(s.Short, s.Name, s.Name2, symbol),
 		Last:     last,
-		Currency: currencySymbol(firstNonEmpty(s.XCurr, s.Curr)),
-		Delta:    model.Delta{Abs: float64(s.Chg), Pct: float64(s.Pcp)},
+		Currency: currencySymbol(firstNonEmpty(s.XCurr, s.Curr, s.BaseCurrency)),
+		Delta:    delta,
 	}, true
 }
 
