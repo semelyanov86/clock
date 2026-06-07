@@ -1,0 +1,28 @@
+# Secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+/bin/
+/clock
+/dist/
+
+# Local render previews / output
+/preview*.jpg
+/preview*.png
+/out*.jpg
+/out*.png
+
+# Test / coverage
+coverage.out
+coverage.html
+*.test
+*.tmp
+
+# Playwright MCP session artifacts
+/.playwright-mcp/
+
+# IDE
+/.idea/
+/.vscode/

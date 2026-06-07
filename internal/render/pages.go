@@ -1,0 +1,183 @@
+package render
+
+import (
+	"strconv"
+
+	"github.com/fogleman/gg"
+
+	"github.com/semelyanov86/clock/internal/model"
+)
+
+// sectionTitle draws a page heading with an accent underline and returns the y
+// below it.
+func (r *Renderer) sectionTitle(dc *gg.Context, area rect, title string) float64 {
+	r.text(dc, title, area.x+6, area.y+20, 0, fontBold, 30, theme.text)
+	dc.SetHexColor(theme.accent)
+	dc.DrawRectangle(area.x+6, area.y+40, 64, 4)
+	dc.Fill()
+	return area.y + 62
+}
+
+// drawParagraph word-wraps s within maxW and returns the baseline below the
+// last drawn line.
+func (r *Renderer) drawParagraph(dc *gg.Context, s, hex string, x, topY, maxW, lineH float64, kind fontKind, size float64, maxLines int) float64 {
+	dc.SetFontFace(r.fonts.face(kind, size))
+	dc.SetHexColor(hex)
+	lines := dc.WordWrap(s, maxW)
+	base := topY + size*0.9
+	for i, ln := range lines {
+		if i >= maxLines {
+			break
+		}
+		dc.DrawString(ln, x, base)
+		base += lineH
+	}
+	return base
+}
+
+// drawDeltaBlock draws an arrow + percentage (large) over a signed absolute
+// change (small), right-aligned at xRight and vertically centred on yc.
+func (r *Renderer) drawDeltaBlock(dc *gg.Context, xRight, yc float64, d model.Delta, currency string) {
+	col := deltaColor(d)
+	r.text(dc, deltaArrow(d)+" "+formatPct(d), xRight, yc-16, 1, fontBold, 34, col)
+	r.text(dc, formatSignedAbs(d, currency, 2), xRight, yc+20, 1, fontRegular, 23, col)
+}
+
+func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect) {
+	y := r.sectionTitle(dc, area, "ПОРТФЕЛЬ")
+	p := snap.Portfolio
+
+	const totalH = 132
+	fillPanel(dc, area.x, y, area.w, totalH, 18)
+	r.text(dc, "Общий баланс", area.x+24, y+34, 0, fontRegular, 22, theme.muted)
+	r.text(dc, formatMoney(p.TotalValue, p.TotalCurrency, 2), area.x+24, y+90, 0, fontBold, 56, theme.text)
+	r.drawDeltaBlock(dc, area.x+area.w-24, y+74, p.TotalDelta, p.TotalCurrency)
+	y += totalH + 16
+
+	if len(p.Positions) == 0 {
+		r.text(dc, "нет данных", area.x+area.w/2, y+40, 0.5, fontRegular, 24, theme.muted)
+		return
+	}
+
+	const rowH = 96
+	maxRows := int((area.y + area.h - y) / rowH)
+	for i, pos := range p.Positions {
+		if i >= maxRows {
+			break
+		}
+		ry := y + float64(i)*rowH
+		fillPanel(dc, area.x, ry, area.w, rowH-12, 14)
+		r.text(dc, pos.Symbol, area.x+22, ry+32, 0, fontBold, 30, theme.text)
+		name := r.fit(dc, pos.Name, fontRegular, 20, 360)
+		r.text(dc, name, area.x+22, ry+62, 0, fontRegular, 20, theme.muted)
+
+		r.text(dc, formatMoney(pos.Value, pos.Currency, 2), area.x+area.w-22, ry+32, 1, fontBold, 30, theme.text)
+		col := deltaColor(pos.Delta)
+		r.text(dc, deltaArrow(pos.Delta)+" "+formatPct(pos.Delta), area.x+area.w-22, ry+64, 1, fontBold, 22, col)
+	}
+}
+
+func (r *Renderer) pageMarkets(dc *gg.Context, snap model.Snapshot, area rect) {
+	y := r.sectionTitle(dc, area, "РЫНКИ")
+
+	// ETF 2×2 grid.
+	const gap = 16
+	tileW := (area.w - gap) / 2
+	const etfH = 116
+	for i, inst := range snap.ETFs {
+		if i >= 4 {
+			break
+		}
+		col := float64(i % 2)
+		row := float64(i / 2)
+		tx := area.x + col*(tileW+gap)
+		ty := y + row*(etfH+gap)
+		r.instrumentTile(dc, tx, ty, tileW, etfH, inst)
+	}
+	y += 2*etfH + gap + gap
+
+	// Brent: full-width tile.
+	const brentH = 104
+	r.instrumentTile(dc, area.x, y, area.w, brentH, snap.Brent)
+	y += brentH + gap
+
+	// FX: three tiles (rates vs RUB).
+	r.text(dc, "Курсы к рублю", area.x+6, y+14, 0, fontRegular, 20, theme.muted)
+	y += 28
+	fxW := (area.w - 2*gap) / 3
+	fxH := area.y + area.h - y
+	if fxH > 150 {
+		fxH = 150
+	}
+	for i, fx := range snap.FX {
+		if i >= 3 {
+			break
+		}
+		tx := area.x + float64(i)*(fxW+gap)
+		r.fxTile(dc, tx, y, fxW, fxH, fx)
+	}
+}
+
+func (r *Renderer) instrumentTile(dc *gg.Context, x, y, w, h float64, inst model.Instrument) {
+	fillPanel(dc, x, y, w, h, 16)
+	if inst.Symbol == "" {
+		r.text(dc, "—", x+w/2, y+h/2, 0.5, fontRegular, 24, theme.muted)
+		return
+	}
+	r.text(dc, inst.Symbol, x+18, y+32, 0, fontBold, 26, theme.accent)
+	if inst.Name != "" {
+		r.text(dc, r.fit(dc, inst.Name, fontRegular, 17, w-36), x+18, y+58, 0, fontRegular, 17, theme.muted)
+	}
+	r.text(dc, formatMoney(inst.Last, inst.Currency, 2), x+18, y+h-24, 0, fontMono, 32, theme.text)
+	col := deltaColor(inst.Delta)
+	r.text(dc, deltaArrow(inst.Delta)+" "+formatPct(inst.Delta), x+w-18, y+h-26, 1, fontBold, 22, col)
+}
+
+func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrument) {
+	fillPanel(dc, x, y, w, h, 16)
+	if fx.Symbol == "" {
+		r.text(dc, "—", x+w/2, y+h/2, 0.5, fontRegular, 24, theme.muted)
+		return
+	}
+	r.text(dc, fx.Symbol, x+16, y+30, 0, fontBold, 24, theme.accent)
+	if fx.Name != "" {
+		r.text(dc, r.fit(dc, fx.Name, fontRegular, 18, w-28), x+16, y+56, 0, fontRegular, 18, theme.muted)
+	}
+	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-42, 0, fontMono, 28, theme.text)
+	col := deltaColor(fx.Delta)
+	r.text(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-14, 0, fontBold, 20, col)
+}
+
+func (r *Renderer) pageInfo(dc *gg.Context, snap model.Snapshot, frame int, area rect) {
+	t := snap.Generated.In(r.loc)
+	r.sectionTitle(dc, area, ruMonthNom(t.Month())+" "+strconv.Itoa(t.Year()))
+
+	calBottom := r.drawCalendar(dc, rect{x: area.x, y: area.y + 62, w: area.w, h: 360}, t)
+
+	// News panel (rotates by frame).
+	ny := calBottom + 16
+	const newsH = 150
+	fillPanel(dc, area.x, ny, area.w, newsH, 16)
+	r.text(dc, "НОВОСТИ", area.x+20, ny+28, 0, fontBold, 20, theme.accent)
+	if len(snap.News) > 0 {
+		item := snap.News[cycleIndex(frame, len(snap.News))]
+		r.drawParagraph(dc, item.Title, theme.text, area.x+20, ny+44, area.w-40, 34, fontBold, 26, 3)
+	} else {
+		r.text(dc, "нет новостей", area.x+20, ny+90, 0, fontRegular, 22, theme.muted)
+	}
+
+	// Quote panel fills the remainder.
+	qy := ny + newsH + 16
+	qh := area.y + area.h - qy
+	if qh < 90 {
+		qh = 90
+	}
+	fillPanel(dc, area.x, qy, area.w, qh, 16)
+	if len(snap.Quotes) > 0 {
+		q := snap.Quotes[cycleIndex(frame, len(snap.Quotes))]
+		end := r.drawParagraph(dc, "«"+q.Text+"»", theme.text, area.x+20, qy+16, area.w-40, 32, fontRegular, 24, 3)
+		if q.Author != "" {
+			r.text(dc, "— "+q.Author, area.x+area.w-24, end+18, 1, fontBold, 22, theme.accent2)
+		}
+	}
+}

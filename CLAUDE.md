@@ -359,18 +359,30 @@ Go 1.25.1 и `task` (go-task) 3.51.1.
 ```
 /data/web/clock
 ├── .mcp.json                 # регистрация MCP-сервера divoom-lan (project scope)
-├── Taskfile.yml              # команды go-task: task ssh, build, test, lint, deploy…
+├── .env.example              # имена ENV-переменных (секреты — в .env, он в .gitignore)
+├── .gitignore                # .env, bin/, preview*.jpg, coverage
+├── go.mod                    # module github.com/semelyanov86/clock
+├── Taskfile.yml              # команды go-task: task ssh, build, run, preview, push, audit, deploy…
 ├── skills-lock.json          # лок-файл источников Go-скиллов
 ├── .claude/skills/           # 12 Go-скиллов (симлинки на .agents/skills/)
 ├── .agents/skills/           # исходники Go-скиллов
 ├── CLAUDE.md                 # этот файл
 ├── README.md                 # обзор проекта
+├── cmd/clock/main.go         # точка входа: флаги/env → wiring → app.Run; режимы --once/--fake/--push
+├── internal/
+│   ├── config/               # Config из ENV (12-factor) + валидация
+│   ├── model/                # домен (Weather, Portfolio, Instrument, NewsItem, Quote, Snapshot) + sample
+│   ├── divoom/               # LAN-клиент устройства: JSON (/divoom_api) + multipart (create/replace)
+│   ├── weather/              # Open-Meteo (без ключа)
+│   ├── favqs/                # favqs.com (цитаты, англ.)
+│   ├── freedom/              # Tradernet сессия: authByLogin(viewOnly)→SID; getOPQ, getMarketReviews, getSecurityInfo
+│   ├── render/               # рендер 800×1280 → JPEG; fonts/*.ttf встроены через go:embed
+│   └── app/                  # снапшот-стор + планировщик фетчеров + кадровый цикл + пуш
 ├── reference/                # снимки реального состояния устройства
 │   ├── device-clock-218-hud-finance.json   # текущая тема (референс вёрстки)
 │   └── device-fonts.json                    # 161 шрифт на устройстве
 └── tools/
     └── mcp-divoom-lan/       # склонированный + собранный MCP-сервер
-# планируется (Go-сервис): go.mod, cmd/clock/, internal/  — после согласования архитектуры
 ```
 
 ## Полезные команды
@@ -395,6 +407,50 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
   -d '{"Command":"Device/GetLocalClockInfo","ReturnCode":0,"UseCurrentDisplayClock":1}'
 ```
 
+## Go-сервис `clock` — реализован (2026-06-07)
+
+Каркас написан и собирается; рендер проверен (превью 800×1280, < 500 KiB). E2E с реальным
+устройством и секретами — отдельный шаг (см. ниже).
+
+**Зафиксированные решения (согласованы с пользователем):**
+- **Раскладка — гибрид:** закреплённая шапка (область нативных часов + дата RU + погода
+  сейчас + прогноз 3ч/3дня), снизу ротация 3 страниц по кадрам: «Портфель», «Рынки»
+  (ETF×4 + Brent + курсы к ₽), «Календарь + новости + цитата».
+- **Часы — нативный слой устройства** (`disp 4`, создаётся один раз через
+  `/create_local_clock`, дальше тикает сам; фон перезаливаем через `/replace_clock_dial_bg`,
+  слой часов сохраняется). Геометрия — `render.NativeClockSlot()`.
+  ⚠️ **Условие:** в приложении Divoom выставить таймзону **Europe/Berlin** и **24ч** —
+  нативный слой берёт время и формат из настроек прибора.
+- **Погода — Open-Meteo, без ключа** (Гамбург, lat 53.55 / lon 9.99).
+- **Цитаты — favqs.com (англ.)**, через `FAVQS_API_TOKEN` (страница `/api_keys`); без токена —
+  фолбэк `/qotd`.
+- **Анимация новостей** — сменой кадра при каждом пуше (новость/цитата ротируются по
+  `cycleIndex(frame, …)`), без animated WebP.
+- **Динамика везде:** ▲ зелёный рост / ▼ красный падёж.
+
+**Freedom24 / Tradernet — подтверждённая схема (по офиц. докам, через headless-браузер):**
+- Транспорт: HTTPS POST, поле формы `q = JSON.stringify({cmd, SID, params})`. Gateway —
+  `https://tradernet.com/api` (`FREEDOM_API_URL`; `freedom24.com/api` тоже принимает).
+- `authByLogin` (`viewOnlyMode:true`, `rememberMe:1`) → ответ `{"success":true,"logged":true,
+  "SID":"…","userId":…}`; **SID кладётся в `q` каждого последующего запроса** (cookie-jar тоже
+  держим). Ошибки: `{"error"/"errMsg":…, "code":N}` (code≠0 — провал; пример: 2 bad json, 7 user
+  not found). Поток `getAccounts:true` → выбрать `userId` → повторный auth.
+- `getOPQ` → корень **`OPQ.ps.pos[]` / `OPQ.ps.acc[]`**, `OPQ.homeCurrency`. Позиция: `i`
+  тикер, `q` кол-во, `market_value`/`s` стоимость, `mkt_price` цена, **`close_price` пред.
+  закрытие** (дневная динамика = `(mkt_price−close_price)·q`), `profit_close` P&L, `curr`,
+  `currval`, `name`/`name2`. Числа парсятся `flexFloat` (число/строка).
+- `getMarketReviews` (новости) и `getSecurityInfo` (котировки) — схемы ответов не
+  задокументированы; парсинг defensive, сырые ответы логируются на `LOG_LEVEL=debug`.
+
+**Запуск:**
+- `task preview` — 3 страницы на фейковых данных → `preview_*.jpg` (без сети/устройства).
+- `task preview:live` / `task push` — реальные данные (читает `.env`), пуш на устройство.
+- `task run` — сервисный цикл; `task build` / `build:linux` / `deploy`.
+- Превью без секретов: `./bin/clock --once --fake --frame {0|1|2} --out f.jpg`.
+
+**Шрифты встроены через `go:embed`** (`internal/render/fonts/DejaVu*`) → бинарь самодостаточный,
+системные шрифты на сервере не нужны.
+
 ## Статус
 
 - [x] MCP-сервер установлен, собран, зарегистрирован в `.mcp.json`.
@@ -402,9 +458,14 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 - [x] API и возможности изучены, снимки устройства сохранены в `reference/`.
 - [x] Go-скиллы подключены (`.claude/skills`, `skills-lock.json`), правила в CLAUDE.md.
 - [x] Сервер Contabo изучен (`ssh sergeyem.ru`), конвенции деплоя задокументированы.
-- [x] `Taskfile.yml` создан (`task ssh` + Go-loop + deploy).
-- [ ] Архитектура Go-сервиса согласована (layout, DI) → `go mod init` + скелет `cmd/clock`.
-- [ ] Дизайн циферблата согласован (вариант A / B).
-- [ ] Интеграция Freedom24 (Tradernet API).
-- [ ] Интеграция погоды.
-- [ ] Рендер/пуш циферблата на устройство.
+- [x] `Taskfile.yml` создан (`task ssh` + Go-loop + preview + push + deploy).
+- [x] Архитектура Go-сервиса согласована и реализована (`go.mod`, `cmd/clock`, `internal/*`).
+- [x] Дизайн циферблата согласован (гибрид) и отрендерен (превью проверены).
+- [x] Интеграция Freedom24 — код написан по подтверждённой схеме `getOPQ`/`authByLogin`
+      (live-выверка `getMarketReviews`/`getSecurityInfo` и символов — на E2E).
+- [x] Интеграция погоды (Open-Meteo) + favqs (цитаты) + unit-тесты (httptest, `-race`).
+- [x] Рендер/пуш циферблата реализованы (multipart 1-в-1 по firmware, тесты).
+- [ ] **E2E:** прописать секреты в `.env`, проверить authByLogin→SID, схемы
+      `getMarketReviews`/`getSecurityInfo`, выверить символы Brent/EUR-USD-CNY к ₽; первый
+      `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`; выставить на приборе Берлин+24ч.
+- [ ] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер, systemd-юнит.
