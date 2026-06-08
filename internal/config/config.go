@@ -76,6 +76,15 @@ type Claude struct {
 	CredentialsPath string
 	Model           string
 	APIURL          string
+
+	// OAuth token refresh. When OAuthRefresh is on, the service exchanges the
+	// stored refresh token for a fresh access token as it nears expiry, so the
+	// widget keeps working on an idle server without Claude Code running. The
+	// endpoint and client id are configurable because they are undocumented and
+	// have moved before.
+	OAuthRefresh  bool
+	OAuthTokenURL string
+	OAuthClientID string
 }
 
 // Intervals controls refresh cadence and frame rotation.
@@ -144,6 +153,9 @@ func Load() (Config, error) {
 			CredentialsPath: env("CLAUDE_CREDENTIALS_PATH", defaultClaudeCredentialsPath()),
 			Model:           env("CLAUDE_USAGE_MODEL", "claude-haiku-4-5-20251001"),
 			APIURL:          env("CLAUDE_API_URL", "https://api.anthropic.com"),
+			OAuthRefresh:    getb("CLAUDE_OAUTH_REFRESH", true),
+			OAuthTokenURL:   env("CLAUDE_OAUTH_TOKEN_URL", "https://platform.claude.com/v1/oauth/token"),
+			OAuthClientID:   env("CLAUDE_OAUTH_CLIENT_ID", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
 		},
 		Intervals: Intervals{
 			Frame:     getd("FRAME_INTERVAL", 13*time.Second),
@@ -206,6 +218,12 @@ func (c Config) validate() []error {
 		add(c.Claude.Model != "", "CLAUDE_USAGE_MODEL must not be empty when CLAUDE_USAGE_ENABLED=true")
 		if u, err := url.Parse(c.Claude.APIURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, fmt.Errorf("CLAUDE_API_URL must be an http(s) URL, got %q", c.Claude.APIURL))
+		}
+		if c.Claude.OAuthRefresh {
+			add(c.Claude.OAuthClientID != "", "CLAUDE_OAUTH_CLIENT_ID must not be empty when CLAUDE_OAUTH_REFRESH=true")
+			if u, err := url.Parse(c.Claude.OAuthTokenURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				errs = append(errs, fmt.Errorf("CLAUDE_OAUTH_TOKEN_URL must be an http(s) URL, got %q", c.Claude.OAuthTokenURL))
+			}
 		}
 	}
 	return errs

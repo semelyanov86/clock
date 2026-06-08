@@ -13,7 +13,7 @@ import (
 )
 
 func staticToken(tok string) Option {
-	return WithTokenFunc(func() (string, error) { return tok, nil })
+	return WithTokenFunc(func(context.Context) (string, error) { return tok, nil })
 }
 
 func TestFetchParsesHeaders(t *testing.T) {
@@ -96,18 +96,19 @@ func TestFetchTokenError(t *testing.T) {
 	}
 }
 
-func TestTokenFromFile(t *testing.T) {
+func TestAccessTokenFromFile(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	ctx := context.Background()
 
 	good := filepath.Join(dir, "good.json")
 	if err := os.WriteFile(good, []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat0-abc","refreshToken":"r"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tok, err := tokenFromFile(good)
+	tok, err := (&credStore{path: good}).accessToken(ctx)
 	if err != nil {
-		t.Fatalf("tokenFromFile: %v", err)
+		t.Fatalf("accessToken: %v", err)
 	}
 	if tok != "sk-ant-oat0-abc" {
 		t.Errorf("token = %q", tok)
@@ -117,7 +118,7 @@ func TestTokenFromFile(t *testing.T) {
 	if err := os.WriteFile(empty, []byte(`{"claudeAiOauth":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tokenFromFile(empty); err == nil {
+	if _, err := (&credStore{path: empty}).accessToken(ctx); err == nil {
 		t.Error("expected error for missing access token")
 	}
 
@@ -125,7 +126,7 @@ func TestTokenFromFile(t *testing.T) {
 	if err := os.WriteFile(bad, []byte(`not json`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tokenFromFile(bad); err == nil || !strings.Contains(err.Error(), "parse") {
+	if _, err := (&credStore{path: bad}).accessToken(ctx); err == nil || !strings.Contains(err.Error(), "parse") {
 		t.Errorf("expected parse error, got %v", err)
 	}
 }

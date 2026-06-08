@@ -14,11 +14,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -39,8 +38,9 @@ const (
 )
 
 // TokenFunc returns the current OAuth access token. It is called on every fetch
-// so a token refreshed by Claude Code is picked up automatically.
-type TokenFunc func() (string, error)
+// so a token refreshed (by this service or by Claude Code) is picked up
+// automatically.
+type TokenFunc func(ctx context.Context) (string, error)
 
 // Client probes the Anthropic API for unified rate-limit usage.
 type Client struct {
@@ -48,6 +48,8 @@ type Client struct {
 	model  string
 	token  TokenFunc
 	httpc  *http.Client
+	store  *credStore
+	log    *slog.Logger
 }
 
 // Option customises a Client.
@@ -73,27 +75,81 @@ func WithModel(m string) Option {
 // WithTokenFunc overrides how the OAuth token is obtained (used in tests).
 func WithTokenFunc(f TokenFunc) Option { return func(c *Client) { c.token = f } }
 
+// WithLogger attaches a logger so token-refresh attempts and outcomes are
+// visible in the service journal.
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Client) {
+		c.log = l
+		c.store.log = l
+	}
+}
+
+// WithOAuthRefresh enables in-process refresh of the OAuth token: when the token
+// is near expiry (or rejected with 401) the client exchanges the stored refresh
+// token for a fresh one and rewrites the credentials file. Empty url/clientID
+// fall back to the Claude Code defaults.
+func WithOAuthRefresh(tokenURL, clientID string) Option {
+	return func(c *Client) {
+		c.store.refresh = true
+		c.store.tokenURL = orDefault(tokenURL, defaultOAuthTokenURL)
+		c.store.clientID = orDefault(clientID, defaultOAuthClientID)
+	}
+}
+
 // New returns a client that reads the OAuth token from the Claude Code
 // credentials file at credentialsPath. The path is read on every fetch so a
-// token refreshed by Claude Code is used automatically.
+// freshly refreshed token is used automatically.
 func New(credentialsPath string, timeout time.Duration, opts ...Option) *Client {
+	store := &credStore{
+		path:  credentialsPath,
+		httpc: &http.Client{Timeout: timeout},
+	}
 	c := &Client{
 		apiURL: defaultAPIURL,
 		model:  defaultModel,
-		token:  func() (string, error) { return tokenFromFile(credentialsPath) },
 		httpc:  &http.Client{Timeout: timeout},
+		store:  store,
 	}
+	c.token = store.accessToken
 	for _, o := range opts {
 		o(c)
 	}
 	return c
 }
 
-// Fetch probes the API and returns the 5-hour and weekly usage windows.
+// Fetch probes the API and returns the 5-hour and weekly usage windows. When
+// the probe is rejected with 401 and refresh is enabled, it refreshes the token
+// once and retries.
 func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
-	token, err := c.token()
+	usage, status, err := c.probe(ctx)
+	if err != nil && status == http.StatusUnauthorized && c.store != nil && c.store.refresh {
+		if _, _, rerr := c.store.forceRefresh(ctx); rerr != nil {
+			if c.log != nil {
+				c.log.Warn("claude oauth refresh after 401 failed", "err", rerr)
+			}
+		} else {
+			usage, _, err = c.probe(ctx)
+		}
+	}
+	return usage, err
+}
+
+// ForceRefresh refreshes the OAuth token immediately and reports the old and new
+// expiry. It powers the `--refresh-claude-token` command and requires refresh to
+// be enabled (see WithOAuthRefresh).
+func (c *Client) ForceRefresh(ctx context.Context) (oldExpiry, newExpiry time.Time, err error) {
+	if c.store == nil || !c.store.refresh {
+		return time.Time{}, time.Time{}, fmt.Errorf("oauth refresh is not enabled")
+	}
+	return c.store.forceRefresh(ctx)
+}
+
+// probe sends one minimal Claude Code message and reads the unified rate-limit
+// headers, returning the HTTP status so callers can react to auth failures.
+func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
+	token, err := c.token(ctx)
 	if err != nil {
-		return model.ClaudeUsage{}, fmt.Errorf("read oauth token: %w", err)
+		return model.ClaudeUsage{}, 0, fmt.Errorf("read oauth token: %w", err)
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -103,12 +159,12 @@ func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
 		"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 	})
 	if err != nil {
-		return model.ClaudeUsage{}, fmt.Errorf("encode request: %w", err)
+		return model.ClaudeUsage{}, 0, fmt.Errorf("encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return model.ClaudeUsage{}, fmt.Errorf("new request: %w", err)
+		return model.ClaudeUsage{}, 0, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("authorization", "Bearer "+token)
 	req.Header.Set("anthropic-version", anthropicVersion)
@@ -117,7 +173,7 @@ func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return model.ClaudeUsage{}, fmt.Errorf("probe anthropic api: %w", err)
+		return model.ClaudeUsage{}, 0, fmt.Errorf("probe anthropic api: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// The body is unused; drain it (bounded) so the connection can be reused.
@@ -125,10 +181,10 @@ func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
 
 	usage, ok := parseUsage(resp.Header)
 	if !ok {
-		return model.ClaudeUsage{}, fmt.Errorf("no unified rate-limit headers in response (http %d)", resp.StatusCode)
+		return model.ClaudeUsage{}, resp.StatusCode, fmt.Errorf("no unified rate-limit headers in response (http %d)", resp.StatusCode)
 	}
 	usage.Updated = time.Now()
-	return usage, nil
+	return usage, resp.StatusCode, nil
 }
 
 // parseUsage extracts the unified rate-limit windows from the response headers.
@@ -164,28 +220,4 @@ func parseUnix(s string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(sec, 0)
-}
-
-// tokenFromFile reads the Claude Code OAuth access token from the credentials
-// JSON file. The file is small and trusted; it is read fresh on each call.
-func tokenFromFile(path string) (string, error) {
-	if path == "" {
-		return "", errors.New("empty credentials path")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read credentials file: %w", err)
-	}
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return "", fmt.Errorf("parse credentials file: %w", err)
-	}
-	if creds.ClaudeAiOauth.AccessToken == "" {
-		return "", errors.New("no claudeAiOauth.accessToken in credentials file")
-	}
-	return creds.ClaudeAiOauth.AccessToken, nil
 }

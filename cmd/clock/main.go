@@ -41,6 +41,7 @@ func main() {
 	fake := flag.Bool("fake", false, "use built-in sample data (no network) with --once")
 	frame := flag.Int("frame", 0, "frame index for --once (selects page / news / quote)")
 	push := flag.Bool("push", false, "with --once, also push the frame to the device")
+	refreshToken := flag.Bool("refresh-claude-token", false, "force-refresh the Claude OAuth token, then exit (setup/verification)")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -49,6 +50,14 @@ func main() {
 		os.Exit(1)
 	}
 	log := newLogger(cfg.LogLevel)
+
+	if *refreshToken {
+		if err := refreshClaudeToken(context.Background(), cfg, log); err != nil {
+			log.Error("refresh claude token", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	rnd, err := render.New(cfg.ClockTZ)
 	if err != nil {
@@ -92,9 +101,9 @@ func wire(cfg config.Config, log *slog.Logger, rnd *render.Renderer) app.Deps {
 	}
 
 	if cfg.HasClaude() {
-		deps.Claude = claudeusage.New(cfg.Claude.CredentialsPath, httpTimeout,
-			claudeusage.WithBaseURL(cfg.Claude.APIURL), claudeusage.WithModel(cfg.Claude.Model))
-		log.Info("Claude usage widget enabled", "credentials", cfg.Claude.CredentialsPath, "model", cfg.Claude.Model)
+		deps.Claude = newClaudeClient(cfg, log)
+		log.Info("Claude usage widget enabled", "credentials", cfg.Claude.CredentialsPath,
+			"model", cfg.Claude.Model, "oauthRefresh", cfg.Claude.OAuthRefresh)
 	} else {
 		log.Info("Claude usage widget disabled (set CLAUDE_USAGE_ENABLED=true to enable)")
 	}
@@ -112,6 +121,49 @@ func wire(cfg config.Config, log *slog.Logger, rnd *render.Renderer) app.Deps {
 		log.Warn("Freedom24 credentials not set; portfolio, news and market quotes disabled")
 	}
 	return deps
+}
+
+// newClaudeClient builds the Claude-usage client, enabling in-process OAuth
+// refresh when configured so the token stays valid on an idle server.
+func newClaudeClient(cfg config.Config, log *slog.Logger) *claudeusage.Client {
+	opts := []claudeusage.Option{
+		claudeusage.WithBaseURL(cfg.Claude.APIURL),
+		claudeusage.WithModel(cfg.Claude.Model),
+		claudeusage.WithLogger(log),
+	}
+	if cfg.Claude.OAuthRefresh {
+		opts = append(opts, claudeusage.WithOAuthRefresh(cfg.Claude.OAuthTokenURL, cfg.Claude.OAuthClientID))
+	}
+	return claudeusage.New(cfg.Claude.CredentialsPath, httpTimeout, opts...)
+}
+
+// refreshClaudeToken forces one OAuth token refresh and reports the result. It
+// powers `clock --refresh-claude-token`, used to verify the refresh flow and to
+// re-arm a freshly authenticated server.
+func refreshClaudeToken(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	if !cfg.HasClaude() {
+		return fmt.Errorf("widget disabled: set CLAUDE_USAGE_ENABLED=true (and CLAUDE_CREDENTIALS_PATH)")
+	}
+	if !cfg.Claude.OAuthRefresh {
+		return fmt.Errorf("oauth refresh disabled: set CLAUDE_OAUTH_REFRESH=true")
+	}
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+
+	old, fresh, err := newClaudeClient(cfg, log).ForceRefresh(ctx)
+	if err != nil {
+		return err
+	}
+	log.Info("claude oauth token refreshed",
+		"oldExpiry", fmtExpiry(old), "newExpiry", fmtExpiry(fresh))
+	return nil
+}
+
+func fmtExpiry(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Format(time.RFC3339)
 }
 
 func runOnce(ctx context.Context, cfg config.Config, log *slog.Logger, rnd *render.Renderer, deps app.Deps, out string, frame int, fake, push bool) error {

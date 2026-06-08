@@ -494,11 +494,17 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
   не показывается (динамический счётчик страниц в `render.go`; smoke-тест покрывает 3- и 4-стр.).
 - **«Серая зона»:** подписочный OAuth-токен вне Claude Code + недокументированные заголовки —
   могут сломаться. Каждый опрос тратит ~1 токен той же квоты, что показывает.
-- **Где креды:** токен читается на каждый опрос (подхватывает refresh от Claude Code). Для Contabo —
-  поставить там Claude Code под своим аккаунтом; если он простаивает, токен протухает (`expiresAt`) —
-  нужен периодический рефреш (`claude` по cron или refresh-обмен в коде). **Открытый вопрос.**
+- **Где креды:** токен читается на каждый опрос. **Авто-рефреш (РЕШЕНО, 2026-06-08):** сервис сам
+  обновляет токен через refresh_token-обмен, когда тот близок к истечению (margin 30 мин) или после 401,
+  и атомарно перезаписывает `~/.claude/.credentials.json` (сохраняя прочие поля; `expiresAt` пишется целым
+  через `json.Number`). Эндпоинт мигрировал на `https://platform.claude.com/v1/oauth/token`, client_id
+  `9d1c250a-...` — оба переопределяемы через ENV. Запрос шлёт браузерный User-Agent (Cloudflare на token-
+  эндпоинте может флагать headless как бота — тот же приём, что для Tradernet). Проверка/ре-арм:
+  `clock --refresh-claude-token`. **Важно:** systemd-юнит должен иметь `ReadWritePaths=/home/sergey/.claude`
+  (иначе `ProtectHome=read-only` запрещает запись) — см. `deploy/clock.service`. Kill-switch: `CLAUDE_OAUTH_REFRESH=false`.
 - **ENV:** `CLAUDE_USAGE_ENABLED`, `CLAUDE_CREDENTIALS_PATH` (деф. `~/.claude/.credentials.json`),
-  `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m).
+  `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m),
+  `CLAUDE_OAUTH_REFRESH` (деф. true), `CLAUDE_OAUTH_TOKEN_URL`, `CLAUDE_OAUTH_CLIENT_ID`.
 - Превью: `./bin/clock --once --fake --frame 3 --out preview_claude.jpg`.
 
 ## Статус
@@ -522,5 +528,6 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
       выставить на приборе Берлин+24ч. (изображения в часы пока НЕ отправлялись.)
 - [x] Виджет «Лимиты Claude» (opt-in): пакет `internal/claudeusage`, 4-я страница ротации,
       probe заголовков подтверждён вживую (см. подраздел выше). Включается `CLAUDE_USAGE_ENABLED=true`.
-- [ ] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер, systemd-юнит;
-      для виджета Claude — решить рефреш OAuth-токена на простаивающем сервере.
+- [x] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер `sergey`, systemd-юнит
+      `clock.service`, авто-деплой через GitHub Actions. Рефреш OAuth-токена Claude решён в коде
+      (см. подраздел выше + `deploy/clock.service` с `ReadWritePaths=/home/sergey/.claude`).

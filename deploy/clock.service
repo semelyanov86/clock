@@ -1,0 +1,33 @@
+# Reference copy of the systemd unit for the clock service on the Contabo host.
+# Installed manually at /etc/systemd/system/clock.service (the deploy workflow
+# only ships the binary and restarts the unit — it does not manage this file).
+# After editing, run: sudo systemctl daemon-reload && sudo systemctl restart clock
+[Unit]
+Description=Divoom Times Frame dashboard renderer/pusher (clock)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sergey
+Group=sergey
+WorkingDirectory=/var/www/clock/current
+EnvironmentFile=-/var/www/clock/shared/clock-secrets
+EnvironmentFile=/var/www/clock/shared/clock-env
+ExecStart=/var/www/clock/current/clock
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# /var/www/clock for releases; ~/.claude so the in-process OAuth refresh can
+# rewrite the Claude Code credentials file under the read-only home.
+ReadWritePaths=/var/www/clock /home/sergey/.claude
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
