@@ -61,7 +61,17 @@ func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect)
 	const totalH = 134
 	fillPanelEdge(dc, area.x, y, area.w, totalH, 18, deltaColor(p.TotalDelta))
 	r.text(dc, "ОБЩИЙ БАЛАНС", area.x+30, y+36, 0, fontBold, 20, theme.muted)
-	r.text(dc, formatMoney(p.TotalValue, p.TotalCurrency, 2), area.x+30, y+94, 0, fontBold, 58, theme.text)
+
+	// Shrink the balance if needed so it never runs into the delta block on the
+	// right (which can be wide for large day changes).
+	deltaChip := deltaArrow(p.TotalDelta) + " " + formatPct(p.TotalDelta)
+	blockW := math.Max(
+		r.measure(dc, deltaChip, fontBold, 30)+30*0.52*2,
+		r.measure(dc, formatSignedAbs(p.TotalDelta, p.TotalCurrency, 2), fontRegular, 22),
+	)
+	balance := formatMoney(p.TotalValue, p.TotalCurrency, 2)
+	balSize := r.fitSize(dc, balance, fontBold, 58, 34, area.w-30-blockW-24)
+	r.text(dc, balance, area.x+30, y+94, 0, fontBold, balSize, theme.text)
 	r.drawDeltaBlock(dc, area.x+area.w-26, y+76, p.TotalDelta, p.TotalCurrency)
 	y += totalH + 16
 
@@ -80,16 +90,23 @@ func (r *Renderer) pagePortfolio(dc *gg.Context, snap model.Snapshot, area rect)
 		ih := float64(rowH - 12)
 		fillPanel(dc, area.x, ry, area.w, ih, 14)
 
+		// Right column: price (top) over a delta chip, both right-aligned and
+		// kept apart so the chip never rides up into the price.
+		price := formatMoney(pos.Value, pos.Currency, 2)
+		priceSize := r.fitSize(dc, price, fontMono, 28, 20, 320)
+		r.text(dc, price, area.x+area.w-24, ry+34, 1, fontMono, priceSize, theme.text)
+		r.chip(dc, deltaArrow(pos.Delta)+" "+formatPct(pos.Delta), area.x+area.w-24, ry+68, 1, 20, deltaColor(pos.Delta))
+
+		// Left column: symbol over the holding name. The name is capped to the
+		// width of the allocation meter below it so the two form one tidy block
+		// instead of the name sprawling across the bar.
 		r.text(dc, pos.Symbol, area.x+24, ry+34, 0, fontBold, 30, theme.text)
 		label := pos.Name
 		if pos.Qty > 0 {
 			label = strconv.FormatFloat(pos.Qty, 'f', -1, 64) + " × " + pos.Name
 		}
-		name := r.fit(dc, label, fontRegular, 20, 340)
+		name := r.fit(dc, label, fontRegular, 20, 330)
 		r.text(dc, name, area.x+24, ry+62, 0, fontRegular, 20, theme.muted)
-
-		r.text(dc, formatMoney(pos.Value, pos.Currency, 2), area.x+area.w-24, ry+34, 1, fontMono, 28, theme.text)
-		r.chip(dc, deltaArrow(pos.Delta)+" "+formatPct(pos.Delta), area.x+area.w-24, ry+66, 1, 20, deltaColor(pos.Delta))
 
 		// Allocation meter: this holding's share of the total portfolio value —
 		// a glanceable sense of weighting, drawn as an underline along the row.
@@ -145,8 +162,8 @@ func (r *Renderer) pageMarkets(dc *gg.Context, snap model.Snapshot, area rect) {
 	y += 30
 	fxW := (area.w - 2*gap) / 3
 	fxH := area.y + area.h - y
-	if fxH > 156 {
-		fxH = 156
+	if fxH > 150 {
+		fxH = 150
 	}
 	for i, fx := range snap.FX {
 		if i >= 3 {
@@ -175,8 +192,16 @@ func (r *Renderer) instrumentTile(dc *gg.Context, x, y, w, h float64, inst model
 	if inst.Name != "" {
 		r.text(dc, r.fit(dc, inst.Name, fontRegular, 17, w-pad-16), x+pad, y+58, 0, fontRegular, 17, theme.muted)
 	}
-	r.text(dc, formatMoney(inst.Last, inst.Currency, 2), x+pad, y+h-24, 0, fontMono, 32, theme.text)
-	r.chip(dc, deltaArrow(inst.Delta)+" "+formatPct(inst.Delta), x+w-18, y+h-30, 1, 21, deltaColor(inst.Delta))
+
+	// Price and delta chip share one baseline so the row reads as a single value;
+	// the price shrinks to fit whatever room the chip leaves on a narrow tile.
+	delta := deltaArrow(inst.Delta) + " " + formatPct(inst.Delta)
+	chipW := r.measure(dc, delta, fontBold, 21) + 21*0.52*2
+	valY := y + h - 28
+	price := formatMoney(inst.Last, inst.Currency, 2)
+	priceSize := r.fitSize(dc, price, fontMono, 32, 22, w-pad-18-chipW-14)
+	r.text(dc, price, x+pad, valY, 0, fontMono, priceSize, theme.text)
+	r.chip(dc, delta, x+w-18, valY, 1, 21, deltaColor(inst.Delta))
 }
 
 func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrument) {
@@ -189,8 +214,10 @@ func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrumen
 	if fx.Name != "" {
 		r.text(dc, r.fit(dc, fx.Name, fontRegular, 18, w-28), x+16, y+60, 0, fontRegular, 18, theme.muted)
 	}
-	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-52, 0, fontMono, 26, theme.text)
-	r.chip(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-18, 0, 19, deltaColor(fx.Delta))
+	// Price over the delta chip, both anchored to the bottom with even padding so
+	// the chip can never spill past the rounded panel edge.
+	r.text(dc, formatMoney(fx.Last, "₽", 2), x+16, y+h-60, 0, fontMono, 26, theme.text)
+	r.chip(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-28, 0, 19, deltaColor(fx.Delta))
 }
 
 // pageClaude shows Claude's unified rate-limit usage: the rolling 5-hour block
@@ -205,16 +232,13 @@ func (r *Renderer) pageClaude(dc *gg.Context, snap model.Snapshot, area rect) {
 	}
 
 	now := snap.Generated.In(r.loc)
-	const gaugeH = 232
+	const gaugeH = 250
 	y += 14
 	r.usageGauge(dc, area.x, y, area.w, gaugeH, "5 ЧАСОВ", u.Block5h, now)
-	y += gaugeH + 26
+	y += gaugeH + 28
 	r.usageGauge(dc, area.x, y, area.w, gaugeH, "НЕДЕЛЯ", u.Weekly, now)
-	y += gaugeH + 18
-
-	if !u.Updated.IsZero() {
-		r.text(dc, "обновлено "+u.Updated.In(r.loc).Format("15:04"), area.x+area.w-6, y+8, 1, fontRegular, 18, theme.faint)
-	}
+	// The frame footer already carries the "обновлено HH:MM:SS" timestamp, so the
+	// gauges do not repeat it here.
 }
 
 // usageGauge draws one labelled rate-limit window: a status dot + title, a large
@@ -285,7 +309,11 @@ func (r *Renderer) pageInfo(dc *gg.Context, snap model.Snapshot, frame int, area
 		}
 		end := r.drawParagraph(dc, q.Text, theme.text, area.x+36, startY, area.w-72, lineH, fontRegular, qSize, 4)
 		if q.Author != "" {
-			r.text(dc, "— "+q.Author, area.x+area.w-28, end+24, 1, fontBold, 22, theme.accent2)
+			authorY := end + 24
+			if limit := qy + qh - 18; authorY > limit {
+				authorY = limit
+			}
+			r.text(dc, "— "+q.Author, area.x+area.w-28, authorY, 1, fontBold, 22, theme.accent2)
 		}
 	}
 }

@@ -49,22 +49,26 @@ func (r *Renderer) drawWeatherNow(dc *gg.Context, w model.Weather) {
 	drawWeatherIcon(dc, 74, 232, 78, w.Now.Code)
 	r.text(dc, roundTemp(w.Now.TempC), 126, 228, 0, fontBold, 64, theme.text)
 
+	// Condition + city sit between the big temperature and the stat cluster. The
+	// label shrinks (rather than truncates) so a long word never crosses into the
+	// first divider, and the block is capped well short of the readouts.
 	_, label := model.DescribeWMO(w.Now.Code)
-	r.text(dc, r.fit(dc, label, fontBold, 26, 180), 262, 210, 0, fontBold, 26, theme.accent2)
+	labelSize := r.fitSize(dc, label, fontBold, 26, 18, 150)
+	r.text(dc, label, 250, 212, 0, fontBold, labelSize, theme.accent2)
 	city := w.City
 	if city == "" {
 		city = "—"
 	}
-	r.text(dc, r.fit(dc, city, fontRegular, 24, 180), 262, 248, 0, fontRegular, 24, theme.muted)
+	r.text(dc, r.fit(dc, city, fontRegular, 24, 150), 250, 250, 0, fontRegular, 24, theme.muted)
 
-	// HUD readout cluster: three labelled stats with hairline dividers, far
-	// more legible at a distance than a single thin joined line of text.
-	r.headerStat(dc, 456, "ОЩУЩ.", roundTemp(w.Now.FeelsC))
+	// HUD readout cluster: three labelled stats, fenced off from the weather block
+	// and from each other by hairline dividers, far more legible at a distance.
+	r.headerStat(dc, 466, "ОЩУЩ.", roundTemp(w.Now.FeelsC))
 	r.headerStat(dc, 578, "ВЛАЖН.", strconv.Itoa(w.Now.Humidity)+"%")
-	r.headerStat(dc, 700, "ВЕТЕР", strconv.Itoa(int(w.Now.WindKmh))+" км/ч")
+	r.headerStat(dc, 698, "ВЕТЕР", strconv.Itoa(int(w.Now.WindKmh))+" км/ч")
 	dc.SetHexColor(theme.strokeSoft)
 	dc.SetLineWidth(1.5)
-	for _, dx := range []float64{517, 639} {
+	for _, dx := range []float64{416, 517, 639} {
 		dc.DrawLine(dx, 214, dx, 256)
 		dc.Stroke()
 	}
