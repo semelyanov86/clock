@@ -33,6 +33,11 @@ LAN-API Divoom в инструменты для Claude Code.
 ├── .mcp.json                 # регистрация MCP-сервера divoom-lan (project scope)
 ├── CLAUDE.md                 # инструкции и техсправка для сессий Claude Code
 ├── README.md                 # этот файл
+├── deploy/                   # серверная инфраструктура (WireGuard и т.п.)
+│   ├── wg0.conf.example      # шаблон WireGuard-конфига Contabo (без секретов)
+│   ├── wg-reresolve-wg0.sh   # переразрешение endpoint при смене домашнего IP
+│   ├── wg-reresolve.service  # systemd-юнит (oneshot) для скрипта выше
+│   └── wg-reresolve.timer    # systemd-таймер (раз в 2 мин)
 ├── reference/                # снимки реального состояния устройства
 │   ├── device-clock-218-hud-finance.json   # текущая тема (референс вёрстки)
 │   └── device-fonts.json                    # 161 шрифт, установленный на устройстве
@@ -157,6 +162,74 @@ Contabo (всегда онлайн): Go-сервис
 - Рендерер + пуш пишем первыми и сначала гоняем с этой машины; затем код переезжает на
   Contabo. Шаги WireGuard и деплой Go-сервиса — отдельным промптом/проектом.
 - План Б: дешёвый always-on узел дома (Raspberry Pi) как пушер — с FRITZ!Box не нужен.
+
+## Деплой и WireGuard
+
+Go-сервис крутится на Contabo (`ssh sergeyem.ru`) под systemd и пушит картинку на
+устройство `192.168.178.40:9000` через **WireGuard-туннель** до домашнего FRITZ!Box.
+Файлы инфраструктуры лежат в [`deploy/`](./deploy/).
+
+### 1. Туннель WireGuard (Contabo ↔ FRITZ!Box 7690)
+
+FRITZ!Box — **сервер** WireGuard, Contabo — **клиент**.
+
+1. На FRITZ!Box: *Internet → Freigaben → VPN (WireGuard) → «Einzelgerät verbinden»*
+   (нужно подтвердить нажатием физической кнопки на роутере). Экспортировать
+   сгенерированный конфиг пира.
+2. На Contabo создать `/etc/wireguard/wg0.conf` по шаблону
+   [`deploy/wg0.conf.example`](./deploy/wg0.conf.example), перенеся туда ключи из экспорта.
+   **Две обязательные правки** сгенерированного FRITZ!Box-конфига:
+   - `AllowedIPs = 192.168.178.0/24` — **только** домашняя сеть (в экспорте стоит
+     `0.0.0.0/0`, который увёл бы весь трафик сервера в туннель);
+   - **удалить строки `DNS = …`** (иначе перехватят резолвер сервера).
+3. Поднять и включить туннель:
+
+   ```bash
+   sudo install -m 0600 -o root -g root wg0.conf /etc/wireguard/wg0.conf
+   sudo systemctl enable --now wg-quick@wg0
+   sudo wg show wg0          # проверка: должен появиться peer и свежий handshake
+   ping -c3 192.168.178.40   # устройство доступно через туннель
+   ```
+
+### 2. Авто-переразрешение endpoint при смене домашнего IP
+
+`Endpoint` в конфиге — это **MyFRITZ!-DDNS-имя** (`…myfritz.net`), потому что домашний
+IPv6-префикс провайдер ротирует примерно **раз в сутки**. WireGuard резолвит endpoint
+**только один раз при старте** и сам DNS не перечитывает — после ротации все пуши падают
+с `dial tcp 192.168.178.40:9000: i/o timeout`, и дисплей «застывает» на последнем
+долетевшем кадре. Чтобы туннель следовал за новым адресом, скрипт
+[`deploy/wg-reresolve-wg0.sh`](./deploy/wg-reresolve-wg0.sh) каждые 2 минуты
+переразрешает endpoint и обновляет его через `wg set`.
+
+Установка скрипта и таймера:
+
+```bash
+# из каталога deploy/ репозитория
+sudo install -m 0755 -o root -g root wg-reresolve-wg0.sh /usr/local/sbin/wg-reresolve-wg0.sh
+sudo install -m 0644 wg-reresolve.service /etc/systemd/system/wg-reresolve.service
+sudo install -m 0644 wg-reresolve.timer   /etc/systemd/system/wg-reresolve.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now wg-reresolve.timer
+
+# проверка
+systemctl list-timers wg-reresolve.timer   # таймер активен, next ≈ +2 мин
+sudo systemctl start wg-reresolve.service   # прогон вручную
+journalctl -u wg-reresolve.service -n 5     # без ошибок = endpoint обновлён
+```
+
+> ⚠️ Скрипт извлекает публичный ключ пира через `sed 's/^[^=]*=…//'` (а **не** жадным
+> `.*=`): base64-ключ заканчивается на `=`, и жадный вариант сжирал бы весь ключ →
+> пустой peer → скрипт молча превращался в no-op, а туннель умирал при первой же
+> ротации IPv6. Ошибки `wg set` не глушатся и видны в journald.
+
+### 3. Диагностика и ручное восстановление
+
+```bash
+sudo wg show wg0                 # старый handshake + «много sent / мало received» = туннель лёг
+ping -c3 192.168.178.40          # 100% потерь = устройство недоступно через туннель
+sudo systemctl restart wg-quick@wg0   # мгновенный фикс: перерезолвить endpoint вручную
+journalctl -u clock -n 50        # таймауты пуша на стороне сервиса
+```
 
 ## Статус
 

@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-resolve WireGuard wg0 endpoint (dynamic home IP)
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wg-reresolve-wg0.sh

@@ -1,0 +1,31 @@
+# WireGuard config for the Contabo server (the WireGuard *client*).
+# Install as /etc/wireguard/wg0.conf (root:root, 0600), then:
+#   sudo systemctl enable --now wg-quick@wg0
+#
+# The FRITZ!Box 7690 is the WireGuard *server* (Internet -> Freigaben ->
+# VPN (WireGuard) -> "Einzelgerät verbinden"; confirm with the physical button
+# on the box). Export its generated peer config and transcribe the values below.
+#
+# TWO mandatory edits to the FRITZ!Box-generated config (do NOT skip):
+#   1. AllowedIPs = 192.168.178.0/24   <- the home LAN ONLY. The generated file
+#      uses 0.0.0.0/0, which would route the ENTIRE server through the tunnel.
+#   2. Remove any "DNS = ..." line       <- else it hijacks the server resolver.
+
+[Interface]
+# Private key of THIS server's WireGuard interface (keep secret, never commit).
+PrivateKey = <CONTABO_PRIVATE_KEY>
+# Address assigned to the server inside the home subnet (+ optional ULA v6).
+Address = 192.168.178.201/24, fd06:e859:4b91::201/64
+
+[Peer]
+# Public key of the FRITZ!Box WireGuard endpoint.
+PublicKey = <FRITZBOX_PUBLIC_KEY>
+# Pre-shared key from the FRITZ!Box export (keep secret, never commit).
+PresharedKey = <PRESHARED_KEY>
+# Home LAN only -- see edit #1 above.
+AllowedIPs = 192.168.178.0/24
+# MyFRITZ! DDNS hostname so the tunnel follows the home's dynamic IP.
+# WireGuard resolves this ONCE at startup; wg-reresolve.timer keeps it current.
+Endpoint = <your-id>.myfritz.net:<port>
+# Keepalive so the FRITZ!Box keeps the (CGNAT/DS-Lite) path open.
+PersistentKeepalive = 25
