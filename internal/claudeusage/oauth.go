@@ -30,6 +30,14 @@ const (
 	// endpoint.
 	refreshMargin = 30 * time.Minute
 
+	// Refresh backoff. The token endpoint rate-limits per-IP, and once tripped it
+	// will not reset while we keep hitting it. So after a failed refresh we wait —
+	// 15m, then 30m, 60m, capped at 2h — giving the endpoint quiet time to
+	// recover instead of retrying every poll (which would keep the limit hot
+	// indefinitely). A success clears the backoff.
+	refreshBackoffBase = 15 * time.Minute
+	refreshBackoffMax  = 2 * time.Hour
+
 	// refreshUserAgent presents the refresh request as a browser. The token
 	// endpoint sits behind Cloudflare, which has been seen to flag headless CLI
 	// refreshes as bot traffic; this mirrors the Tradernet client's WAF fix.
@@ -55,7 +63,9 @@ type credStore struct {
 	log      *slog.Logger
 	nowFn    func() time.Time
 
-	mu sync.Mutex
+	mu          sync.Mutex
+	failures    int       // consecutive refresh failures, for backoff
+	nextAttempt time.Time // earliest time the next automatic refresh may run
 }
 
 func (s *credStore) now() time.Time {
@@ -78,10 +88,12 @@ func (s *credStore) accessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if s.refresh && creds.RefreshToken != "" && s.expiringSoon(creds.ExpiresAt) {
-		if rerr := s.refreshLocked(ctx, creds.RefreshToken); rerr != nil {
+	if s.refresh && creds.RefreshToken != "" && s.expiringSoon(creds.ExpiresAt) && s.attemptAllowedLocked() {
+		rerr := s.exchangeLocked(ctx, creds.RefreshToken)
+		s.recordAttemptLocked(rerr)
+		if rerr != nil {
 			if s.log != nil {
-				s.log.Warn("claude oauth proactive refresh failed", "err", rerr)
+				s.log.Warn("claude oauth proactive refresh failed", "err", rerr, "retryAfter", s.nextAttempt.Format(time.RFC3339))
 			}
 			if s.expired(creds.ExpiresAt) {
 				return "", fmt.Errorf("oauth token expired and refresh failed: %w", rerr)
@@ -97,9 +109,9 @@ func (s *credStore) accessToken(ctx context.Context) (string, error) {
 	return creds.AccessToken, nil
 }
 
-// forceRefresh refreshes the token regardless of its expiry. It is used by the
-// on-401 retry and by the `--refresh-claude-token` command, and returns the old
-// and new expiry instants for reporting.
+// forceRefresh refreshes the token regardless of expiry or backoff. It powers
+// the `--refresh-claude-token` command (an explicit operator action), and
+// returns the old and new expiry instants for reporting.
 func (s *credStore) forceRefresh(ctx context.Context) (oldExpiry, newExpiry time.Time, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,8 +124,10 @@ func (s *credStore) forceRefresh(ctx context.Context) (oldExpiry, newExpiry time
 		return time.Time{}, time.Time{}, errors.New("no claudeAiOauth.refreshToken in credentials file")
 	}
 	oldExpiry = msToTime(creds.ExpiresAt)
-	if err := s.refreshLocked(ctx, creds.RefreshToken); err != nil {
-		return oldExpiry, time.Time{}, err
+	rerr := s.exchangeLocked(ctx, creds.RefreshToken)
+	s.recordAttemptLocked(rerr)
+	if rerr != nil {
+		return oldExpiry, time.Time{}, rerr
 	}
 	re, err := s.readCreds()
 	if err != nil {
@@ -122,9 +136,57 @@ func (s *credStore) forceRefresh(ctx context.Context) (oldExpiry, newExpiry time
 	return oldExpiry, msToTime(re.ExpiresAt), nil
 }
 
-// refreshLocked performs the refresh_token grant and writes the rotated token
+// refreshOn401 is the automatic retry after a probe is rejected with 401. It
+// respects the backoff so a persistently failing endpoint is not hammered.
+func (s *credStore) refreshOn401(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.attemptAllowedLocked() {
+		return fmt.Errorf("refresh in backoff until %s", s.nextAttempt.Format(time.RFC3339))
+	}
+	creds, err := s.readCreds()
+	if err != nil {
+		return err
+	}
+	if creds.RefreshToken == "" {
+		return errors.New("no claudeAiOauth.refreshToken in credentials file")
+	}
+	rerr := s.exchangeLocked(ctx, creds.RefreshToken)
+	s.recordAttemptLocked(rerr)
+	return rerr
+}
+
+// attemptAllowedLocked reports whether an automatic refresh may run now (i.e. it
+// is not within a post-failure backoff window). The caller must hold s.mu.
+func (s *credStore) attemptAllowedLocked() bool {
+	return s.nextAttempt.IsZero() || !s.now().Before(s.nextAttempt)
+}
+
+// recordAttemptLocked updates the backoff state after an attempt: a failure
+// schedules the next attempt with exponential backoff; a success clears it. The
+// caller must hold s.mu.
+func (s *credStore) recordAttemptLocked(err error) {
+	if err == nil {
+		s.failures = 0
+		s.nextAttempt = time.Time{}
+		return
+	}
+	s.failures++
+	shift := s.failures - 1
+	if shift > 3 {
+		shift = 3
+	}
+	delay := refreshBackoffBase << uint(shift)
+	if delay > refreshBackoffMax {
+		delay = refreshBackoffMax
+	}
+	s.nextAttempt = s.now().Add(delay)
+}
+
+// exchangeLocked performs the refresh_token grant and writes the rotated token
 // back to the file. The caller must hold s.mu.
-func (s *credStore) refreshLocked(ctx context.Context, refreshToken string) error {
+func (s *credStore) exchangeLocked(ctx context.Context, refreshToken string) error {
 	body, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,

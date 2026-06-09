@@ -502,6 +502,10 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
   эндпоинте может флагать headless как бота — тот же приём, что для Tradernet). Проверка/ре-арм:
   `clock --refresh-claude-token`. **Важно:** systemd-юнит должен иметь `ReadWritePaths=/home/sergey/.claude`
   (иначе `ProtectHome=read-only` запрещает запись) — см. `deploy/clock.service`. Kill-switch: `CLAUDE_OAUTH_REFRESH=false`.
+  **Backoff (урок 2026-06-09):** token-эндпоинт жёстко троттлит per-IP и НЕ остывает, пока его дёргаешь.
+  Без паузы ретраи каждые 5 мин держали лимит горячим всю ночь (192 × HTTP 429, токен так и не обновился).
+  Теперь после неудачи refresh ждёт 15м→30м→60м→(cap)2ч (экспонента, сброс при успехе); и проактивный путь,
+  и retry-на-401 уважают backoff. Не долбить эндпоинт вручную — серия запросов выбьет лимит.
 - **ENV:** `CLAUDE_USAGE_ENABLED`, `CLAUDE_CREDENTIALS_PATH` (деф. `~/.claude/.credentials.json`),
   `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m),
   `CLAUDE_OAUTH_REFRESH` (деф. true), `CLAUDE_OAUTH_TOKEN_URL`, `CLAUDE_OAUTH_CLIENT_ID`.

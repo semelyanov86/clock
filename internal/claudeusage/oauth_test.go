@@ -166,6 +166,48 @@ func TestRefreshFailureKeepsValidToken(t *testing.T) {
 	}
 }
 
+func TestRefreshBackoffSuppressesRetries(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := fixedNow()
+	clock := now
+	// Near expiry (inside the 30m margin) but still valid well past the backoff
+	// window, so a failed refresh falls back silently and each call would
+	// otherwise try again.
+	path := writeCreds(t, dir, "still-valid", "refresh-1", now.Add(25*time.Minute).UnixMilli())
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &credStore{path: path, tokenURL: srv.URL, clientID: "c", httpc: srv.Client(), refresh: true, nowFn: func() time.Time { return clock }}
+
+	// Three polls in quick succession: only the first should hit the endpoint;
+	// the next two are inside the 15m backoff window.
+	for i := 0; i < 3; i++ {
+		if _, err := s.accessToken(context.Background()); err != nil {
+			t.Fatalf("accessToken #%d: %v", i, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("endpoint hit %d times during backoff, want 1", calls)
+	}
+
+	// After the backoff window elapses, a new attempt is allowed.
+	clock = now.Add(16 * time.Minute)
+	if _, err := s.accessToken(context.Background()); err != nil {
+		t.Fatalf("accessToken after backoff: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("endpoint hit %d times total, want 2 after backoff elapsed", calls)
+	}
+}
+
 func TestForceRefreshReportsExpiry(t *testing.T) {
 	t.Parallel()
 

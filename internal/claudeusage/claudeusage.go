@@ -123,7 +123,7 @@ func New(credentialsPath string, timeout time.Duration, opts ...Option) *Client 
 func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
 	usage, status, err := c.probe(ctx)
 	if err != nil && status == http.StatusUnauthorized && c.store != nil && c.store.refresh {
-		if _, _, rerr := c.store.forceRefresh(ctx); rerr != nil {
+		if rerr := c.store.refreshOn401(ctx); rerr != nil {
 			if c.log != nil {
 				c.log.Warn("claude oauth refresh after 401 failed", "err", rerr)
 			}
