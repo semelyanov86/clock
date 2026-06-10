@@ -1,0 +1,18 @@
+# Refreshes the Claude Code OAuth token via the official CLI before it expires,
+# so the clock service's "Claude limits" widget keeps working on an idle server.
+# Reference copy — installed manually at /etc/systemd/system/ (the deploy
+# workflow does not manage it). Driven by claude-token-refresh.timer.
+[Unit]
+Description=Refresh the Claude Code OAuth token via the official CLI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sergey
+Group=sergey
+Environment=HOME=/home/sergey
+# Installed location of the guard script (see deploy/claude-token-refresh.sh).
+ExecStart=/var/www/clock/shared/claude-token-refresh.sh
+# The script must read+write ~/.claude (claude rotates the credentials there),
+# so this unit is intentionally NOT sandboxed like clock.service.

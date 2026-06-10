@@ -153,9 +153,14 @@ func Load() (Config, error) {
 			CredentialsPath: env("CLAUDE_CREDENTIALS_PATH", defaultClaudeCredentialsPath()),
 			Model:           env("CLAUDE_USAGE_MODEL", "claude-haiku-4-5-20251001"),
 			APIURL:          env("CLAUDE_API_URL", "https://api.anthropic.com"),
-			OAuthRefresh:    getb("CLAUDE_OAUTH_REFRESH", true),
-			OAuthTokenURL:   env("CLAUDE_OAUTH_TOKEN_URL", "https://platform.claude.com/v1/oauth/token"),
-			OAuthClientID:   env("CLAUDE_OAUTH_CLIENT_ID", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
+			// Off by default: the in-process refresh is rejected (HTTP 429) by the
+			// real token endpoint, which appears to distinguish the genuine Claude
+			// Code client. Token freshness is handled out-of-process by the
+			// claude-token-refresh systemd timer (see deploy/). Kept opt-in in case
+			// the endpoint's behaviour changes.
+			OAuthRefresh:  getb("CLAUDE_OAUTH_REFRESH", false),
+			OAuthTokenURL: env("CLAUDE_OAUTH_TOKEN_URL", "https://platform.claude.com/v1/oauth/token"),
+			OAuthClientID: env("CLAUDE_OAUTH_CLIENT_ID", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
 		},
 		Intervals: Intervals{
 			Frame:     getd("FRAME_INTERVAL", 13*time.Second),

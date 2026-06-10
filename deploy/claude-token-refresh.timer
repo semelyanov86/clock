@@ -1,0 +1,16 @@
+# Runs claude-token-refresh.service every 10 minutes. The script is a cheap
+# no-op until the token is within 30m of expiry, then it lets `claude` refresh.
+# Reference copy — installed manually at /etc/systemd/system/; enable with:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-token-refresh.timer
+[Unit]
+Description=Periodically refresh the Claude Code OAuth token
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+# Spread load off exact minute boundaries.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

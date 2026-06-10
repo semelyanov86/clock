@@ -494,21 +494,20 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
   не показывается (динамический счётчик страниц в `render.go`; smoke-тест покрывает 3- и 4-стр.).
 - **«Серая зона»:** подписочный OAuth-токен вне Claude Code + недокументированные заголовки —
   могут сломаться. Каждый опрос тратит ~1 токен той же квоты, что показывает.
-- **Где креды:** токен читается на каждый опрос. **Авто-рефреш (РЕШЕНО, 2026-06-08):** сервис сам
-  обновляет токен через refresh_token-обмен, когда тот близок к истечению (margin 30 мин) или после 401,
-  и атомарно перезаписывает `~/.claude/.credentials.json` (сохраняя прочие поля; `expiresAt` пишется целым
-  через `json.Number`). Эндпоинт мигрировал на `https://platform.claude.com/v1/oauth/token`, client_id
-  `9d1c250a-...` — оба переопределяемы через ENV. Запрос шлёт браузерный User-Agent (Cloudflare на token-
-  эндпоинте может флагать headless как бота — тот же приём, что для Tradernet). Проверка/ре-арм:
-  `clock --refresh-claude-token`. **Важно:** systemd-юнит должен иметь `ReadWritePaths=/home/sergey/.claude`
-  (иначе `ProtectHome=read-only` запрещает запись) — см. `deploy/clock.service`. Kill-switch: `CLAUDE_OAUTH_REFRESH=false`.
-  **Backoff (урок 2026-06-09):** token-эндпоинт жёстко троттлит per-IP и НЕ остывает, пока его дёргаешь.
-  Без паузы ретраи каждые 5 мин держали лимит горячим всю ночь (192 × HTTP 429, токен так и не обновился).
-  Теперь после неудачи refresh ждёт 15м→30м→60м→(cap)2ч (экспонента, сброс при успехе); и проактивный путь,
-  и retry-на-401 уважают backoff. Не долбить эндпоинт вручную — серия запросов выбьет лимит.
+- **Где креды:** токен читается на каждый опрос. **Авто-рефреш — через официальный `claude` CLI (РЕШЕНО, 2026-06-10).**
+  Историю: сначала пробовали refresh_token-обмен прямо в Go-сервисе, но token-эндпоинт `https://platform.claude.com/v1/oauth/token`
+  **отбивает «сырой» запрос HTTP 429** (видимо, отличает настоящий Claude Code от самодельного; браузерный UA не помог), и так
+  13/13 попыток даже с backoff. При этом `claude -p "ok"` обновляет токен с этого же сервера без проблем. **Поэтому пивот:**
+  токен продлевает сам CLI по systemd-таймеру `claude-token-refresh.{sh,service,timer}` (см. `deploy/`): guard-скрипт раз в 10 мин
+  смотрит `expiresAt` и зовёт `claude` только у порога истечения (<30 мин), с backoff (15м→30м→60м→2ч) на случай сбоя.
+  `claude` НЕ обновляет здоровый токен (рефрешит у/после истечения) → возможен короткий разрыв виджета ≤10 мин на цикл — это ок.
+  Go-рефреш оставлен в коде, но **выключен по умолчанию** (`CLAUDE_OAUTH_REFRESH=false`); ре-арм/проверка вручную:
+  `clock --refresh-claude-token`. Если в нём, юнит `clock.service` должен иметь `ReadWritePaths=/home/sergey/.claude`.
+  **Урок:** не долбить token-эндпоинт сырыми запросами — серия 429 ничего не даёт (ночь 8→9 июня: 192 × 429 без backoff,
+  токен так и не обновился). Только официальный клиент.
 - **ENV:** `CLAUDE_USAGE_ENABLED`, `CLAUDE_CREDENTIALS_PATH` (деф. `~/.claude/.credentials.json`),
   `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m),
-  `CLAUDE_OAUTH_REFRESH` (деф. true), `CLAUDE_OAUTH_TOKEN_URL`, `CLAUDE_OAUTH_CLIENT_ID`.
+  `CLAUDE_OAUTH_REFRESH` (деф. **false** — рефреш делает CLI-таймер, см. выше), `CLAUDE_OAUTH_TOKEN_URL`, `CLAUDE_OAUTH_CLIENT_ID`.
 - Превью: `./bin/clock --once --fake --frame 3 --out preview_claude.jpg`.
 
 ## Статус
