@@ -1,69 +1,59 @@
 #!/usr/bin/env bash
 # Keep the Claude Code OAuth token fresh by letting the OFFICIAL `claude` CLI
-# refresh it shortly before it expires. Driven by claude-token-refresh.timer.
+# refresh it the moment it expires. Run as a long-lived systemd service
+# (claude-token-refresh.service): it sleeps until the token's expiry, wakes,
+# lets `claude` do the refresh, then sleeps again until the next expiry. No
+# polling — `claude` is invoked at most once per token lifetime (~8h), so it
+# spends a negligible amount of the subscription quota the widget reports.
 #
 # Why the CLI and not an in-process refresh: the platform.claude.com token
-# endpoint 429s a hand-rolled refresh request (it appears to distinguish the
-# genuine client), but `claude` itself refreshes fine from this host. So we let
-# it do the exchange and the clock service just reads the resulting token.
-#
-# It only invokes `claude` when the token is near expiry, so it costs a
-# negligible amount of the subscription quota the widget reports. On failure it
-# backs off (15m → 30m → 1h → cap 2h) so a throttled endpoint is not hammered.
+# endpoint 429s a hand-rolled refresh (it appears to single out the genuine
+# client), but `claude` refreshes fine from this host. `claude` only refreshes
+# an expired / about-to-expire token, never a healthy one, so we wake at expiry.
 set -uo pipefail
 
 CREDS="${CLAUDE_CREDENTIALS_PATH:-$HOME/.claude/.credentials.json}"
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
-STATE="${CLAUDE_REFRESH_STATE:-$HOME/.claude/.token-refresh.state}"
-THRESHOLD="${CLAUDE_REFRESH_THRESHOLD_SECONDS:-1800}" # refresh when <30m to expiry
 PROMPT="${CLAUDE_REFRESH_PROMPT:-ok}"
+GRACE="${CLAUDE_REFRESH_GRACE_SECONDS:-5}" # wake this long after expiry
+MAX_SLEEP="${CLAUDE_REFRESH_MAX_SLEEP:-21600}" # re-check at least every 6h (clock-skew safety)
+MIN_BACKOFF=900  # 15m
+MAX_BACKOFF=7200 # 2h
 
-log() { echo "$*"; }
+read_exp_ms() { jq -r '.claudeAiOauth.expiresAt // 0' "$CREDS" 2>/dev/null || echo 0; }
 
-now=$(date +%s)
-exp_ms=$(jq -r '.claudeAiOauth.expiresAt // 0' "$CREDS" 2>/dev/null || echo 0)
-exp=$(( exp_ms / 1000 ))
-remain=$(( exp - now ))
+fails=0
+while true; do
+	exp_ms=$(read_exp_ms)
+	exp=$(( exp_ms / 1000 ))
+	now=$(date +%s)
+	wait=$(( exp - now + GRACE ))
 
-# Healthy and not near expiry: nothing to do (cheap, no quota spent).
-if [ "$exp" -gt 0 ] && [ "$remain" -gt "$THRESHOLD" ]; then
-	log "token fresh: $(( remain / 60 ))m left; skipping"
-	exit 0
-fi
+	# Token still valid: sleep until just past its expiry (capped, so an external
+	# refresh or a clock change is picked up within MAX_SLEEP).
+	if [ "$exp_ms" -gt 0 ] && [ "$wait" -gt 0 ]; then
+		[ "$wait" -gt "$MAX_SLEEP" ] && wait="$MAX_SLEEP"
+		echo "token valid for $(( (exp - now) / 60 ))m; sleeping ${wait}s"
+		sleep "$wait"
+		continue
+	fi
 
-# Respect backoff after a previous failure.
-next_attempt=0
-failures=0
-if [ -r "$STATE" ]; then
-	read -r next_attempt failures < "$STATE" 2>/dev/null || { next_attempt=0; failures=0; }
-fi
-if [ "$now" -lt "$next_attempt" ]; then
-	log "refresh in backoff for $(( (next_attempt - now) / 60 ))m more; skipping"
-	exit 0
-fi
+	# Expired (or expiry unknown): let claude refresh it.
+	echo "token expired; invoking claude to refresh"
+	timeout 90 "$CLAUDE_BIN" -p "$PROMPT" >/dev/null 2>&1
+	rc=$?
+	new_ms=$(read_exp_ms)
+	if [ "$new_ms" -gt "$exp_ms" ]; then
+		fails=0
+		echo "refreshed: expiresAt -> $(date -d "@$(( new_ms / 1000 ))" '+%F %T %Z') (claude rc=$rc)"
+		continue
+	fi
 
-log "token near/after expiry ($(( remain / 60 ))m); invoking claude to refresh"
-timeout 90 "$CLAUDE_BIN" -p "$PROMPT" >/dev/null 2>&1
-claude_rc=$?
-
-new_exp_ms=$(jq -r '.claudeAiOauth.expiresAt // 0' "$CREDS" 2>/dev/null || echo 0)
-if [ "$new_exp_ms" -gt "$exp_ms" ]; then
-	rm -f "$STATE"
-	log "refreshed: expiresAt -> $(date -d "@$(( new_exp_ms / 1000 ))" '+%F %T %Z') (claude rc=$claude_rc)"
-	exit 0
-fi
-
-# No advance. If the token is still valid, claude simply hasn't refreshed yet —
-# not a failure; retry on the next tick as expiry approaches. Only treat it as a
-# real failure (and back off) once the token is actually expired.
-if [ "$exp" -gt 0 ] && [ "$remain" -gt 0 ]; then
-	log "claude did not refresh yet ($(( remain / 60 ))m left, rc=$claude_rc); will retry next tick"
-	exit 0
-fi
-
-failures=$(( failures + 1 ))
-shift_n=$(( failures - 1 )); [ "$shift_n" -gt 3 ] && shift_n=3
-delay=$(( 900 << shift_n )); [ "$delay" -gt 7200 ] && delay=7200
-printf '%s %s\n' "$(( now + delay ))" "$failures" > "$STATE"
-log "refresh failed (claude rc=$claude_rc, expiresAt unchanged); backing off $(( delay / 60 ))m" >&2
-exit 1
+	# Refresh did not take: back off (15m → 30m → 1h → cap 2h) so a throttled
+	# endpoint is not hammered, then retry.
+	fails=$(( fails + 1 ))
+	sh=$(( fails - 1 )); [ "$sh" -gt 3 ] && sh=3
+	back=$(( MIN_BACKOFF << sh )); [ "$back" -gt "$MAX_BACKOFF" ] && back="$MAX_BACKOFF"
+	echo "refresh failed (claude rc=$rc, expiresAt unchanged); retrying in $(( back / 60 ))m" >&2
+	sleep "$back"
+done
