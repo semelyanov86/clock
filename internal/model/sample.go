@@ -27,8 +27,8 @@ func SampleSnapshot(now time.Time) Snapshot {
 			TotalValue: 12340.55, TotalCurrency: "€",
 			TotalDelta: Delta{Abs: 146.20, Pct: 1.20},
 			Positions: []Position{
-				{Symbol: "VUAA.EU", Name: "Vanguard S&P 500", Qty: 42, Value: 4210.10, Currency: "€", Delta: Delta{Abs: 38.4, Pct: 0.92}},
-				{Symbol: "IGLN.EU", Name: "iShares Gold", Qty: 60, Value: 3180.00, Currency: "€", Delta: Delta{Abs: -22.1, Pct: -0.69}},
+				{Symbol: "IBCI.EU", Name: "iShares € Infl Bond", Qty: 42, Value: 4210.10, Currency: "€", Delta: Delta{Abs: 38.4, Pct: 0.92}},
+				{Symbol: "4GLD.EU", Name: "Xetra-Gold", Qty: 60, Value: 3180.00, Currency: "€", Delta: Delta{Abs: -22.1, Pct: -0.69}},
 				{Symbol: "XEON.EU", Name: "Xtrackers EUR O/N", Qty: 18, Value: 2890.40, Currency: "€", Delta: Delta{Abs: 1.2, Pct: 0.04}},
 				{Symbol: "IQQ0.EU", Name: "iShares MSCI", Qty: 25, Value: 2060.05, Currency: "€", Delta: Delta{Abs: 49.7, Pct: 2.47}},
 			},
@@ -36,8 +36,8 @@ func SampleSnapshot(now time.Time) Snapshot {
 		ETFs: []Instrument{
 			{Symbol: "XEON.EU", Name: "Xtrackers EUR O/N", Last: 160.58, Currency: "€", Delta: Delta{Abs: 0.06, Pct: 0.04}},
 			{Symbol: "IQQ0.EU", Name: "iShares MSCI", Last: 82.40, Currency: "€", Delta: Delta{Abs: 1.99, Pct: 2.47}},
-			{Symbol: "VUAA.EU", Name: "Vanguard S&P 500", Last: 100.24, Currency: "€", Delta: Delta{Abs: 0.91, Pct: 0.92}},
-			{Symbol: "IGLN.EU", Name: "iShares Gold", Last: 53.00, Currency: "€", Delta: Delta{Abs: -0.37, Pct: -0.69}},
+			{Symbol: "IBCI.EU", Name: "iShares € Infl Bond", Last: 100.24, Currency: "€", Delta: Delta{Abs: 0.91, Pct: 0.92}},
+			{Symbol: "4GLD.EU", Name: "Xetra-Gold", Last: 53.00, Currency: "€", Delta: Delta{Abs: -0.37, Pct: -0.69}},
 		},
 		Brent: Instrument{Symbol: "BRENT", Name: "Brent Crude", Last: 82.43, Currency: "$", Delta: Delta{Abs: -0.61, Pct: -0.73}},
 		FX: []Instrument{

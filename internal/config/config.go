@@ -135,7 +135,7 @@ func Load() (Config, error) {
 			Login:       env("FREEDOM_LOGIN", ""),
 			Password:    env("FREEDOM_PASSWORD", ""),
 			UserID:      env("FREEDOM_USER_ID", ""),
-			ETFSymbols:  envList("FREEDOM_ETF_SYMBOLS", "XEON.EU,IQQ0.EU,VUAA.EU,IGLN.EU"),
+			ETFSymbols:  envList("FREEDOM_ETF_SYMBOLS", "XEON.EU,IQQ0.EU,IBCI.EU,4GLD.EU"),
 			BrentSymbol: env("FREEDOM_BRENT_SYMBOL", "BRNT.EU"),
 			FXSymbols:   envList("FREEDOM_FX_SYMBOLS", "EUR/RUR,USD/RUR,CNY/RUR"),
 			LogBodies:   getb("FREEDOM_LOG_BODIES", false),
