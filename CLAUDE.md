@@ -448,11 +448,18 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
   "logged":true,"SID":"…","userId":…}`; **SID в `q` каждого запроса** (cookie-jar тоже держим).
   `userId` из ответа захватывается для `requestedUserId`. Ошибки: `{"error"/"errMsg":…,"code":N}`.
 - **Портфель — `getUserPositions`** (`params:{requestedUserId}`), НЕ getOPQ (getOPQ в view-only
-  отдаёт пустой `pos[]`). Корень: `pos[]`, `acc[]` (кэш), `money_detailed`, `net_assets`. Позиция:
-  `i` тикер, `q` кол-во, `market_value` (в валюте позиции), `mkt_price`, **`close_price`** пред.
-  закрытие (дневная динамика = `(mkt_price−close_price)·q`), `bal_price_a` средняя цена покупки,
-  `profit_close` ОБЩИЙ P&L, **`open_bal`** (=0 → бесплатная бонусная акция, отфильтровываем),
-  `curr`/`base_currency`, **`currval`** = валюта→RUB. Тотал считаем в EUR (через `currval`/EUR-RUB).
+  отдаёт пустой `pos[]`). Корень: `pos[]`, `acc[]` (кэш), `money_detailed`, `net_assets`, `totals`.
+  Позиция: `i` тикер, `q` кол-во, `market_value` (в валюте позиции), `mkt_price`, `close_price`
+  пред. закрытие, `bal_price_a` средняя цена покупки, **`profit_close` ОБЩИЙ P&L**,
+  **`open_bal`** (=0 → бесплатная бонусная акция, отфильтровываем), `curr`/`base_currency`, `currval`.
+  ⚠️ **ТОТАЛ — из `net_assets.net_assets`** (=`totals.total_trade_positions`, авторитетная сумма,
+  ровно как в приложении Freedom24), а НЕ ручной суммой позиций. Валюта тотала — `net_assets.currency`
+  (обычно USD); конвертим в EUR по курсам из **`money_detailed[<cur>].rate`** (валюта→RUB, у каждой
+  валюты свой; `currval` в позициях НЕнадёжен — расходится по строкам даже в одной валюте, поэтому не
+  использовать его для тотала). Фолбэк тотала (если нет net_assets/totals) — ручная сумма позиций+кэш.
+  ⚠️ **«Динамика» позиции = ОБЩИЙ P&L** (`profit_close`/`open_bal`), НЕ дневное изменение: держим
+  низколиквидные ETF (4GLD/IQQ0), которые маркируются по вчерашнему закрытию → `mkt_price==close_price`
+  → дневная дельта = ложный 0. Тотал-дельта = сумма `profit_close` в EUR. (Согласовано, E2E 2026-07-01.)
   ⚠️ только в полной сессии (см. `FREEDOM_VIEW_ONLY` выше).
 - `getSecurityInfo` (котировки, **без авторизации**): цена = `ltp`, пред.закрытие = `ClosePrice`,
   валюта = `base_currency`. **`pcp` нет, `chg` ненадёжен** → дельту считаем из `ltp−ClosePrice`.

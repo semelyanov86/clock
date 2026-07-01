@@ -36,14 +36,19 @@ func TestParseAuth(t *testing.T) {
 func TestParseUserPositions(t *testing.T) {
 	t.Parallel()
 
-	// Mirrors a live getUserPositions response: a EUR holding, a USD holding,
-	// a free bonus share (open_bal=0 → dropped), and EUR/USD cash. currval is
-	// the currency→RUB rate (EUR 85, USD 73), used to total in EUR.
+	// Mirrors a live getUserPositions response: EUR and USD holdings, a free
+	// bonus share (open_bal=0 → dropped), and EUR/USD cash. money_detailed carries
+	// the account FX rates to RUB (EUR 85, USD 73); net_assets is the broker's own
+	// total account equity in USD, which is what the app shows. profit_close is the
+	// position's total P&L since purchase (the dynamics shown on the card).
 	raw := `{
+		"totals":{"currency":"USD","total_trade_positions":8000},
+		"net_assets":{"currency":"USD","net_assets":8000},
+		"money_detailed":{"EUR":{"currency":"EUR","rate":85},"USD":{"currency":"USD","rate":73}},
 		"pos":[
-			{"i":"XEON.EU","name2":"Xtrackers","q":39,"market_value":5823.09,"mkt_price":149.319,"close_price":149.28,"open_bal":5812.88,"curr":"EUR","base_currency":"EUR","currval":85},
-			{"i":"VUAA.EU","name2":"Vanguard","q":9,"market_value":1303.2,"mkt_price":144.8,"close_price":137.62,"open_bal":1249.62,"curr":"USD","base_currency":"USD","currval":73},
-			{"i":"BB.US","name2":"BlackBerry","q":1,"market_value":9.1,"mkt_price":9.14,"close_price":9.41,"open_bal":0,"curr":"USD","currval":73}
+			{"i":"XEON.EU","name2":"Xtrackers","q":39,"market_value":5823.09,"mkt_price":149.28,"close_price":149.28,"open_bal":5812.88,"profit_close":10.21,"curr":"EUR","base_currency":"EUR","currval":85},
+			{"i":"VUAA.EU","name2":"Vanguard","q":9,"market_value":1303.2,"mkt_price":144.8,"close_price":137.62,"open_bal":1249.62,"profit_close":53.58,"curr":"USD","base_currency":"USD","currval":73},
+			{"i":"BB.US","name2":"BlackBerry","q":1,"market_value":9.1,"mkt_price":9.14,"close_price":9.41,"open_bal":0,"profit_close":5,"curr":"USD","currval":73}
 		],
 		"acc":[
 			{"curr":"EUR","s":1.18,"currval":85},
@@ -62,28 +67,65 @@ func TestParseUserPositions(t *testing.T) {
 	if len(p.Positions) != 2 {
 		t.Fatalf("positions = %d, want 2 (bonus share must be dropped)", len(p.Positions))
 	}
-	if p.Positions[0].Symbol != "XEON.EU" {
-		t.Errorf("first symbol = %q, want XEON.EU", p.Positions[0].Symbol)
+	xeon := p.Positions[0]
+	if xeon.Symbol != "XEON.EU" {
+		t.Errorf("first symbol = %q, want XEON.EU", xeon.Symbol)
 	}
-	// VUAA shown in its own currency ($) with a positive day change.
+	// XEON has no daily move (mkt_price==close_price) but a real P&L: the dynamics
+	// must reflect profit_close/open_bal, not the (zero) day change.
+	if wantPct := 10.21 / 5812.88 * 100; math.Abs(xeon.Delta.Pct-wantPct) > 0.001 {
+		t.Errorf("XEON delta pct = %v, want %v (total P&L, not day change)", xeon.Delta.Pct, wantPct)
+	}
+	if math.Abs(xeon.Delta.Abs-10.21) > 0.001 {
+		t.Errorf("XEON delta abs = %v, want profit_close 10.21", xeon.Delta.Abs)
+	}
+	// VUAA shown in its own currency ($) with a positive P&L.
 	vuaa := p.Positions[1]
 	if vuaa.Currency != "$" {
 		t.Errorf("VUAA currency = %q, want $", vuaa.Currency)
 	}
 	if vuaa.Delta.Direction() != 1 {
-		t.Errorf("VUAA should be up (144.8 > 137.62)")
+		t.Errorf("VUAA should be up (profit_close 53.58 > 0)")
 	}
-	// Total in EUR: XEON 5823.09 + VUAA 1303.2*73/85 + cash (1.18 + 89.63*73/85).
-	wantTotal := 5823.09 + 1303.2*73.0/85.0 + 1.18 + 89.63*73.0/85.0
-	if math.Abs(p.TotalValue-wantTotal) > 0.5 {
-		t.Errorf("total = %v, want ~%v", p.TotalValue, wantTotal)
+	// Total comes from net_assets (8000 USD), converted to EUR — independent of
+	// the per-position sum.
+	if wantTotal := 8000.0 * 73.0 / 85.0; math.Abs(p.TotalValue-wantTotal) > 0.01 {
+		t.Errorf("total = %v, want net_assets in EUR ~%v", p.TotalValue, wantTotal)
 	}
-	// Weights are fractions of the total and the largest holding leads.
-	if p.Positions[0].Weight <= p.Positions[1].Weight {
-		t.Errorf("XEON weight should exceed VUAA: %v vs %v", p.Positions[0].Weight, p.Positions[1].Weight)
+	// Total dynamics = aggregate P&L in EUR (XEON 10.21 + VUAA 53.58*73/85).
+	if wantPnL := 10.21 + 53.58*73.0/85.0; math.Abs(p.TotalDelta.Abs-wantPnL) > 0.01 {
+		t.Errorf("total delta = %v, want aggregate P&L ~%v", p.TotalDelta.Abs, wantPnL)
 	}
-	if w := p.Positions[0].Weight; w <= 0 || w > 1 {
+	// Weights are fractions of the invested positions and the largest leads.
+	if xeon.Weight <= vuaa.Weight {
+		t.Errorf("XEON weight should exceed VUAA: %v vs %v", xeon.Weight, vuaa.Weight)
+	}
+	if w := xeon.Weight; w <= 0 || w > 1 {
 		t.Errorf("weight out of range: %v", w)
+	}
+}
+
+// TestParseUserPositionsTotalFallback verifies the total falls back to a
+// hand-sum of positions + cash when the broker omits net_assets/totals.
+func TestParseUserPositionsTotalFallback(t *testing.T) {
+	t.Parallel()
+
+	raw := `{
+		"money_detailed":{"EUR":{"currency":"EUR","rate":85},"USD":{"currency":"USD","rate":73}},
+		"pos":[
+			{"i":"XEON.EU","q":39,"market_value":5823.09,"open_bal":5812.88,"profit_close":10.21,"curr":"EUR"},
+			{"i":"VUAA.EU","q":9,"market_value":1303.2,"open_bal":1249.62,"profit_close":53.58,"curr":"USD"}
+		],
+		"acc":[{"curr":"EUR","s":1.18},{"curr":"USD","s":89.63}]
+	}`
+
+	p, err := parseUserPositions(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("parseUserPositions: %v", err)
+	}
+	wantTotal := 5823.09 + 1303.2*73.0/85.0 + 1.18 + 89.63*73.0/85.0
+	if math.Abs(p.TotalValue-wantTotal) > 0.01 {
+		t.Errorf("fallback total = %v, want hand-sum ~%v", p.TotalValue, wantTotal)
 	}
 }
 

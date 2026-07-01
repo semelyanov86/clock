@@ -97,8 +97,9 @@ type userPos struct {
 	Qty         flexFloat `json:"q"`
 	MarketValue flexFloat `json:"market_value"` // value in the position currency
 	MktPrice    flexFloat `json:"mkt_price"`    // current price
-	ClosePrice  flexFloat `json:"close_price"`  // previous close (for daily change)
+	ClosePrice  flexFloat `json:"close_price"`  // previous close
 	OpenBal     flexFloat `json:"open_bal"`     // cost basis; 0 ⇒ free bonus share
+	ProfitClose flexFloat `json:"profit_close"` // total P&L since purchase (own currency)
 	Curr        string    `json:"curr"`
 	BaseCurr    string    `json:"base_currency"`
 	CurrVal     flexFloat `json:"currval"` // position currency → RUB rate
@@ -111,18 +112,48 @@ type userAcc struct {
 	CurrVal flexFloat `json:"currval"`
 }
 
+// moneyDetail is one per-currency block from money_detailed; rate is that
+// currency's canonical account exchange rate to RUB.
+type moneyDetail struct {
+	Currency string    `json:"currency"`
+	Rate     flexFloat `json:"rate"` // currency → RUB
+}
+
+// netAssets is the broker's authoritative total account equity (the figure the
+// Freedom24 app shows), denominated in the account's tariff currency.
+type netAssets struct {
+	Currency  string    `json:"currency"`
+	NetAssets flexFloat `json:"net_assets"`
+}
+
+// totals mirrors net_assets: total_trade_positions equals net_assets and serves
+// as a fallback when the net_assets block is absent.
+type totals struct {
+	Currency            string    `json:"currency"`
+	TotalTradePositions flexFloat `json:"total_trade_positions"`
+}
+
 type userPositionsResponse struct {
-	Pos    []userPos `json:"pos"`
-	Acc    []userAcc `json:"acc"`
-	Error  string    `json:"error"`
-	ErrMsg string    `json:"errMsg"`
+	Pos           []userPos              `json:"pos"`
+	Acc           []userAcc              `json:"acc"`
+	Totals        totals                 `json:"totals"`
+	NetAssets     netAssets              `json:"net_assets"`
+	MoneyDetailed map[string]moneyDetail `json:"money_detailed"`
+	Error         string                 `json:"error"`
+	ErrMsg        string                 `json:"errMsg"`
 }
 
 // parseUserPositions builds the portfolio from a getUserPositions response.
-// Holdings are mixed-currency (EUR/USD), so each is converted to the home
-// currency (EUR) via its currval (→RUB) and the EUR→RUB rate to compute the
-// total, the day change, and each position's weight. Per-position cards keep the
-// instrument's own currency. Free bonus shares (open_bal=0) are dropped.
+//
+// Total value comes from the broker's own net_assets figure (the number the
+// Freedom24 app shows), converted to EUR — hand-summing per-position values
+// diverges from it because market_value and the per-row currval are inconsistent
+// across holdings. The per-position and total "dynamics" is the total P&L since
+// purchase (profit_close vs open_bal cost basis), not the daily change: the
+// low-liquidity ETFs held here are marked at the previous close, so
+// mkt_price==close_price and any day change would be a spurious 0. Per-position
+// cards keep the instrument's own currency; free bonus shares (open_bal=0) are
+// hidden. Weights are each holding's share of the invested positions.
 func parseUserPositions(raw json.RawMessage) (model.Portfolio, error) {
 	var r userPositionsResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -132,21 +163,45 @@ func parseUserPositions(raw json.RawMessage) (model.Portfolio, error) {
 		return model.Portfolio{}, errors.New(msg)
 	}
 
-	// EUR→RUB rate, taken from any EUR-denominated holding or cash balance.
-	eurRub := 1.0
-	for _, p := range r.Pos {
-		if strings.EqualFold(p.Curr, "EUR") && p.CurrVal != 0 {
-			eurRub = float64(p.CurrVal)
-			break
+	// Currency→RUB rate table. money_detailed carries the account's canonical FX
+	// rates; positions'/cash currval fill any gaps.
+	rateRUB := map[string]float64{}
+	for cur, md := range r.MoneyDetailed {
+		if md.Rate != 0 {
+			rateRUB[strings.ToUpper(cur)] = float64(md.Rate)
 		}
 	}
-	if eurRub == 1.0 {
-		for _, a := range r.Acc {
-			if strings.EqualFold(a.Curr, "EUR") && a.CurrVal != 0 {
-				eurRub = float64(a.CurrVal)
-				break
-			}
+	addRate := func(cur string, v float64) {
+		cur = strings.ToUpper(strings.TrimSpace(cur))
+		if cur == "" || v == 0 {
+			return
 		}
+		if _, ok := rateRUB[cur]; !ok {
+			rateRUB[cur] = v
+		}
+	}
+	for _, p := range r.Pos {
+		addRate(firstNonEmpty(p.Curr, p.BaseCurr), float64(p.CurrVal))
+	}
+	for _, a := range r.Acc {
+		addRate(a.Curr, float64(a.CurrVal))
+	}
+
+	eurRub := rateRUB["EUR"]
+	if eurRub == 0 {
+		eurRub = 1.0
+	}
+	// toEUR converts an amount in currency cur to EUR via the RUB cross-rate.
+	toEUR := func(amount float64, cur string) float64 {
+		cur = strings.ToUpper(strings.TrimSpace(cur))
+		if cur == "" || cur == "EUR" {
+			return amount
+		}
+		rate := rateRUB[cur]
+		if rate == 0 {
+			return amount // best effort: treat as already in the home currency
+		}
+		return amount * rate / eurRub
 	}
 
 	type valued struct {
@@ -154,58 +209,72 @@ func parseUserPositions(raw json.RawMessage) (model.Portfolio, error) {
 		eur float64
 	}
 	rows := make([]valued, 0, len(r.Pos))
-	var total, totalDelta float64
+	var posSumEUR, pnlEUR, costEUR float64
 	for _, p := range r.Pos {
 		if float64(p.OpenBal) == 0 {
 			continue // free bonus share — no cost basis, hide it
 		}
 		qty := float64(p.Qty)
+		cur := firstNonEmpty(p.Curr, p.BaseCurr)
 		valOwn := float64(p.MarketValue)
 		if valOwn == 0 {
 			valOwn = float64(p.MktPrice) * qty
 		}
-		var dayAbs, dayPct float64
-		if c := float64(p.ClosePrice); c != 0 {
-			dayAbs = (float64(p.MktPrice) - c) * qty
-			dayPct = (float64(p.MktPrice) - c) / c * 100
+		pnl := float64(p.ProfitClose)
+		cost := float64(p.OpenBal)
+		var pnlPct float64
+		if cost != 0 {
+			pnlPct = pnl / cost * 100
 		}
-		rate := nonZero(float64(p.CurrVal), eurRub) // position currency → RUB
+		eur := toEUR(valOwn, cur)
 		rows = append(rows, valued{
 			pos: model.Position{
 				Symbol:   p.Ticker,
 				Name:     firstNonEmpty(p.Name2, p.Name, p.Ticker),
 				Qty:      qty,
 				Value:    valOwn,
-				Currency: currencySymbol(firstNonEmpty(p.Curr, p.BaseCurr)),
-				Delta:    model.Delta{Abs: dayAbs, Pct: dayPct},
+				Currency: currencySymbol(cur),
+				Delta:    model.Delta{Abs: pnl, Pct: pnlPct},
 			},
-			eur: valOwn * rate / eurRub,
+			eur: eur,
 		})
-		total += valOwn * rate / eurRub
-		totalDelta += dayAbs * rate / eurRub
+		posSumEUR += eur
+		pnlEUR += toEUR(pnl, cur)
+		costEUR += toEUR(cost, cur)
 	}
-	for _, a := range r.Acc {
-		total += float64(a.S) * nonZero(float64(a.CurrVal), eurRub) / eurRub
+
+	// Authoritative total: the broker's net_assets (fallback: totals, then a
+	// hand-sum of positions + cash), converted to EUR.
+	total := 0.0
+	netVal := nonZero(float64(r.NetAssets.NetAssets), float64(r.Totals.TotalTradePositions))
+	switch {
+	case netVal != 0:
+		total = toEUR(netVal, firstNonEmpty(r.NetAssets.Currency, r.Totals.Currency))
+	default:
+		total = posSumEUR
+		for _, a := range r.Acc {
+			total += toEUR(float64(a.S), a.Curr)
+		}
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].eur > rows[j].eur })
 	positions := make([]model.Position, 0, len(rows))
 	for _, rw := range rows {
-		if total > 0 {
-			rw.pos.Weight = rw.eur / total
+		if posSumEUR > 0 {
+			rw.pos.Weight = rw.eur / posSumEUR
 		}
 		positions = append(positions, rw.pos)
 	}
 
 	totalPct := 0.0
-	if base := total - totalDelta; base != 0 {
-		totalPct = totalDelta / base * 100
+	if costEUR != 0 {
+		totalPct = pnlEUR / costEUR * 100
 	}
 
 	return model.Portfolio{
 		TotalValue:    total,
 		TotalCurrency: "€",
-		TotalDelta:    model.Delta{Abs: totalDelta, Pct: totalPct},
+		TotalDelta:    model.Delta{Abs: pnlEUR, Pct: totalPct},
 		Positions:     positions,
 	}, nil
 }
