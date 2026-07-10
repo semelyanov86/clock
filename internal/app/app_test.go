@@ -28,9 +28,14 @@ func (fakeRenderer) Render(_ model.Snapshot, _ int) ([]byte, error) { return []b
 type fakeDevice struct {
 	creates, patches, selects int
 	lastClockID               int
+	brightness                []int
 }
 
 func (f *fakeDevice) Ping(context.Context) error { return nil }
+func (f *fakeDevice) SetBrightness(_ context.Context, level int) error {
+	f.brightness = append(f.brightness, level)
+	return nil
+}
 func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any, []string, []byte) (int, error) {
 	f.creates++
 	return 555, nil
@@ -112,6 +117,40 @@ func TestPushFrameCreatesThenPatches(t *testing.T) {
 	a.pushFrame(context.Background(), 1)
 	if dev.patches != 1 || dev.lastClockID != 555 || dev.selects != 2 {
 		t.Fatalf("after second push: patches=%d lastClockID=%d selects=%d", dev.patches, dev.lastClockID, dev.selects)
+	}
+}
+
+func TestNextBrightnessEvent(t *testing.T) {
+	t.Parallel()
+	loc := time.UTC
+	schedule := []config.BrightnessPoint{
+		{Hour: 4, Min: 0, Level: 1},
+		{Hour: 5, Min: 0, Level: 3},
+		{Hour: 6, Min: 0, Level: 4},
+		{Hour: 7, Min: 0, Level: 7},
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 7, 10, h, m, 0, 0, loc) }
+
+	tests := []struct {
+		name      string
+		now       time.Time
+		wantWait  time.Duration
+		wantLevel int
+	}{
+		{"before first point", at(3, 30), 30 * time.Minute, 1},
+		{"between points", at(4, 15), 45 * time.Minute, 3},
+		{"exactly on a point rolls to next", at(5, 0), time.Hour, 4},
+		{"after last point wraps to tomorrow", at(8, 0), 20 * time.Hour, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotWait, gotLevel := nextBrightnessEvent(tt.now, schedule)
+			if gotWait != tt.wantWait || gotLevel != tt.wantLevel {
+				t.Errorf("nextBrightnessEvent(%s) = (%s, %d), want (%s, %d)",
+					tt.now.Format("15:04"), gotWait, gotLevel, tt.wantWait, tt.wantLevel)
+			}
+		})
 	}
 }
 

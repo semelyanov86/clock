@@ -23,8 +23,20 @@ type Config struct {
 	Weather   Weather
 	Claude    Claude
 	Intervals Intervals
-	ClockTZ   string
-	LogLevel  string
+	// BrightnessSchedule sets the display brightness at fixed times of day (in
+	// CLOCK_TZ). Empty disables the scheduler. The user drops brightness to 0 at
+	// night manually; these points ramp it back up in the morning.
+	BrightnessSchedule []BrightnessPoint
+	ClockTZ            string
+	LogLevel           string
+}
+
+// BrightnessPoint is one scheduled brightness change: at Hour:Min (in CLOCK_TZ)
+// the display is set to Level on the 0–100 scale.
+type BrightnessPoint struct {
+	Hour  int
+	Min   int
+	Level int
 }
 
 // Device holds Divoom LAN connection settings.
@@ -122,6 +134,11 @@ func Load() (Config, error) {
 	getd := func(key string, def time.Duration) time.Duration { v, err := envDur(key, def); track(v, err); return v }
 	getb := func(key string, def bool) bool { v, err := envBool(key, def); track(v, err); return v }
 
+	brightness, brightnessErr := parseBrightnessSchedule(env("BRIGHTNESS_SCHEDULE", defaultBrightnessSchedule))
+	if brightnessErr != nil {
+		errs = append(errs, brightnessErr)
+	}
+
 	c := Config{
 		Device: Device{
 			Host:      env("DIVOOM_DEVICE_HOST", "192.168.178.40"),
@@ -171,8 +188,9 @@ func Load() (Config, error) {
 			Quote:     getd("QUOTE_INTERVAL", 30*time.Minute),
 			Claude:    getd("CLAUDE_USAGE_INTERVAL", 5*time.Minute),
 		},
-		ClockTZ:  env("CLOCK_TZ", "Europe/Berlin"),
-		LogLevel: env("LOG_LEVEL", "info"),
+		BrightnessSchedule: brightness,
+		ClockTZ:            env("CLOCK_TZ", "Europe/Berlin"),
+		LogLevel:           env("LOG_LEVEL", "info"),
 	}
 
 	errs = append(errs, c.validate()...)
@@ -298,6 +316,50 @@ func envBool(key string, def bool) (bool, error) {
 		return def, fmt.Errorf("invalid %s=%q: must be a boolean", key, v)
 	}
 	return b, nil
+}
+
+// defaultBrightnessSchedule ramps the display up in the morning (Berlin time):
+// the user blanks it at night, these points restore it. Override via
+// BRIGHTNESS_SCHEDULE; set it empty to disable the scheduler.
+const defaultBrightnessSchedule = "04:00=1,05:00=3,06:00=4,07:00=7,08:00=15"
+
+// parseBrightnessSchedule parses "HH:MM=LEVEL,HH:MM=LEVEL,…" into schedule
+// points. An empty string disables the scheduler; a present-but-malformed value
+// is an error (no silent fallback).
+func parseBrightnessSchedule(raw string) ([]BrightnessPoint, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var points []BrightnessPoint
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		hm, lvl, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE entry %q: want HH:MM=LEVEL", entry)
+		}
+		hh, mm, ok := strings.Cut(strings.TrimSpace(hm), ":")
+		if !ok {
+			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE time %q: want HH:MM", hm)
+		}
+		hour, err := strconv.Atoi(strings.TrimSpace(hh))
+		if err != nil || hour < 0 || hour > 23 {
+			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE hour in %q: must be 0-23", entry)
+		}
+		minute, err := strconv.Atoi(strings.TrimSpace(mm))
+		if err != nil || minute < 0 || minute > 59 {
+			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE minute in %q: must be 0-59", entry)
+		}
+		level, err := strconv.Atoi(strings.TrimSpace(lvl))
+		if err != nil || level < 0 || level > 100 {
+			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE level in %q: must be 0-100", entry)
+		}
+		points = append(points, BrightnessPoint{Hour: hour, Min: minute, Level: level})
+	}
+	return points, nil
 }
 
 func envList(key, def string) []string {

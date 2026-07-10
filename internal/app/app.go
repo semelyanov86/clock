@@ -61,6 +61,7 @@ type Device interface {
 	CreateLocalClock(ctx context.Context, name string, itemList []map[string]any, itemIDList []string, background []byte) (int, error)
 	PatchDialBg(ctx context.Context, clockID int, background []byte) error
 	SetClockSelect(ctx context.Context, clockID int) error
+	SetBrightness(ctx context.Context, level int) error
 }
 
 // Deps are the wired dependencies. Source fields may be nil when their
@@ -107,6 +108,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.refreshAll(ctx)
 
 	a.startFetchers(ctx)
+	go a.runBrightnessSchedule(ctx)
 
 	// Bring the dashboard to the foreground. The create path selects a freshly
 	// created dial; a pre-pinned DIVOOM_CLOCK_ID is otherwise only background-
@@ -247,6 +249,65 @@ func (a *App) periodic(ctx context.Context, interval time.Duration, fn func(cont
 			fn(ctx)
 		}
 	}
+}
+
+// runBrightnessSchedule sleeps until each configured time-of-day and sets the
+// display brightness then, in CLOCK_TZ (the same zone the native clock uses).
+// It loops forever, re-arming for the next point (today or tomorrow), until ctx
+// is cancelled. No-op when the schedule is empty.
+func (a *App) runBrightnessSchedule(ctx context.Context) {
+	if len(a.cfg.BrightnessSchedule) == 0 {
+		return
+	}
+	loc, err := time.LoadLocation(a.cfg.ClockTZ)
+	if err != nil { // CLOCK_TZ is validated at load, so this is defensive.
+		a.log.Error("brightness schedule disabled: load timezone", "tz", a.cfg.ClockTZ, "err", err)
+		return
+	}
+	a.log.Info("brightness schedule active", "tz", a.cfg.ClockTZ, "points", len(a.cfg.BrightnessSchedule))
+
+	for {
+		wait, level := nextBrightnessEvent(time.Now().In(loc), a.cfg.BrightnessSchedule)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			a.setBrightness(ctx, level)
+		}
+	}
+}
+
+// setBrightness applies one brightness level with the device timeout.
+func (a *App) setBrightness(ctx context.Context, level int) {
+	bctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+	defer cancel()
+	if err := a.deps.Device.SetBrightness(bctx, level); err != nil {
+		a.log.Warn("set scheduled brightness", "level", level, "err", err)
+		return
+	}
+	a.log.Info("set scheduled brightness", "level", level)
+}
+
+// nextBrightnessEvent returns how long to wait until the next scheduled point
+// and the level to set then. now must already be in the schedule's timezone;
+// schedule must be non-empty. Points earlier than now roll over to tomorrow.
+func nextBrightnessEvent(now time.Time, schedule []config.BrightnessPoint) (time.Duration, int) {
+	var (
+		best  time.Duration = -1
+		level int
+	)
+	for _, p := range schedule {
+		t := time.Date(now.Year(), now.Month(), now.Day(), p.Hour, p.Min, 0, 0, now.Location())
+		if !t.After(now) {
+			t = t.AddDate(0, 0, 1)
+		}
+		if d := t.Sub(now); best < 0 || d < best {
+			best, level = d, p.Level
+		}
+	}
+	return best, level
 }
 
 func (a *App) doWeather(ctx context.Context) {

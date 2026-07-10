@@ -79,6 +79,15 @@ func (c *Client) SetClockSelect(ctx context.Context, clockID int) error {
 	return err
 }
 
+// SetBrightness sets the display brightness on the 0–100 scale.
+func (c *Client) SetBrightness(ctx context.Context, level int) error {
+	if level < 0 || level > 100 {
+		return fmt.Errorf("brightness %d out of range (0-100)", level)
+	}
+	_, err := c.command(ctx, "Channel/SetBrightness", map[string]any{"Brightness": level})
+	return err
+}
+
 // CreateLocalClock creates a new local dial from a background image plus an
 // ItemList (e.g. the native clock layer) and returns the new ClockId.
 func (c *Client) CreateLocalClock(ctx context.Context, name string, itemList []map[string]any, itemIDList []string, background []byte) (int, error) {
