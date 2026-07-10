@@ -62,6 +62,7 @@ type Device interface {
 	PatchDialBg(ctx context.Context, clockID int, background []byte) error
 	SetClockSelect(ctx context.Context, clockID int) error
 	SetBrightness(ctx context.Context, level int) error
+	GetBrightness(ctx context.Context) (int, error)
 }
 
 // Deps are the wired dependencies. Source fields may be nil when their
@@ -84,16 +85,26 @@ type App struct {
 	deps    Deps
 	store   *store
 	clockID int
+
+	// Brightness set-retry policy. Overridable in tests; the night-time
+	// WireGuard tunnel can briefly drop, and a scheduled set is a single shot
+	// (unlike the frame loop, which retries every tick), so retry to ride it out.
+	retryInitial  time.Duration
+	retryMax      time.Duration
+	retryDeadline time.Duration
 }
 
 // New constructs the application.
 func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 	return &App{
-		cfg:     cfg,
-		log:     log,
-		deps:    deps,
-		store:   newStore(),
-		clockID: cfg.Device.ClockID,
+		cfg:           cfg,
+		log:           log,
+		deps:          deps,
+		store:         newStore(),
+		clockID:       cfg.Device.ClockID,
+		retryInitial:  30 * time.Second,
+		retryMax:      2 * time.Minute,
+		retryDeadline: 10 * time.Minute,
 	}
 }
 
@@ -267,7 +278,12 @@ func (a *App) runBrightnessSchedule(ctx context.Context) {
 	a.log.Info("brightness schedule active", "tz", a.cfg.ClockTZ, "points", len(a.cfg.BrightnessSchedule))
 
 	for {
-		wait, level := nextBrightnessEvent(time.Now().In(loc), a.cfg.BrightnessSchedule)
+		now := time.Now().In(loc)
+		wait, level := nextBrightnessEvent(now, a.cfg.BrightnessSchedule)
+		a.log.Info("next brightness change",
+			"at", now.Add(wait).Format("2006-01-02T15:04 MST"),
+			"level", level, "in", wait.Round(time.Second).String())
+
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -279,15 +295,58 @@ func (a *App) runBrightnessSchedule(ctx context.Context) {
 	}
 }
 
-// setBrightness applies one brightness level with the device timeout.
+// setBrightness applies one brightness level, retrying transient device/network
+// failures with backoff until retryDeadline (the tunnel can drop for a minute or
+// two overnight). On success it reads the value back to confirm it took effect.
 func (a *App) setBrightness(ctx context.Context, level int) {
-	bctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+	deadline := time.Now().Add(a.retryDeadline)
+	backoff := a.retryInitial
+
+	for attempt := 1; ; attempt++ {
+		bctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+		err := a.deps.Device.SetBrightness(bctx, level)
+		cancel()
+		if err == nil {
+			a.log.Info("set scheduled brightness", "level", level, "attempt", attempt)
+			a.verifyBrightness(ctx, level)
+			return
+		}
+
+		if time.Now().Add(backoff).After(deadline) {
+			a.log.Warn("set scheduled brightness: giving up", "level", level, "attempts", attempt, "err", err)
+			return
+		}
+		a.log.Warn("set scheduled brightness: will retry", "level", level, "attempt", attempt, "backoff", backoff.String(), "err", err)
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if backoff < a.retryMax {
+			backoff = min(backoff*2, a.retryMax)
+		}
+	}
+}
+
+// verifyBrightness reads the brightness back and warns if it does not match what
+// was just set (a "command accepted but no effect" case the set alone can't
+// catch). A failed read-back is only a warning — the set itself succeeded.
+func (a *App) verifyBrightness(ctx context.Context, want int) {
+	vctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
 	defer cancel()
-	if err := a.deps.Device.SetBrightness(bctx, level); err != nil {
-		a.log.Warn("set scheduled brightness", "level", level, "err", err)
+	got, err := a.deps.Device.GetBrightness(vctx)
+	if err != nil {
+		a.log.Warn("verify brightness: read-back failed", "want", want, "err", err)
 		return
 	}
-	a.log.Info("set scheduled brightness", "level", level)
+	if got != want {
+		a.log.Warn("verify brightness: mismatch after set", "want", want, "got", got)
+		return
+	}
+	a.log.Info("verify brightness: confirmed", "level", got)
 }
 
 // nextBrightnessEvent returns how long to wait until the next scheduled point

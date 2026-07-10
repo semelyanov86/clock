@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -29,12 +30,24 @@ type fakeDevice struct {
 	creates, patches, selects int
 	lastClockID               int
 	brightness                []int
+	setCalls                  int
+	failSetTimes              int // return an error on the first N SetBrightness calls
 }
 
 func (f *fakeDevice) Ping(context.Context) error { return nil }
 func (f *fakeDevice) SetBrightness(_ context.Context, level int) error {
+	f.setCalls++
+	if f.setCalls <= f.failSetTimes {
+		return errors.New("simulated device error")
+	}
 	f.brightness = append(f.brightness, level)
 	return nil
+}
+func (f *fakeDevice) GetBrightness(context.Context) (int, error) {
+	if len(f.brightness) == 0 {
+		return 0, nil
+	}
+	return f.brightness[len(f.brightness)-1], nil
 }
 func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any, []string, []byte) (int, error) {
 	f.creates++
@@ -151,6 +164,56 @@ func TestNextBrightnessEvent(t *testing.T) {
 					tt.now.Format("15:04"), gotWait, gotLevel, tt.wantWait, tt.wantLevel)
 			}
 		})
+	}
+}
+
+func TestSetBrightnessRetriesThenSucceeds(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second}}
+	dev := &fakeDevice{failSetTimes: 2} // fail twice, then succeed
+	a := New(cfg, testLogger(), Deps{Device: dev})
+	a.retryInitial, a.retryMax, a.retryDeadline = time.Millisecond, time.Millisecond, time.Second
+
+	a.setBrightness(context.Background(), 7)
+
+	if dev.setCalls != 3 {
+		t.Errorf("setCalls = %d, want 3 (2 failures + 1 success)", dev.setCalls)
+	}
+	if len(dev.brightness) != 1 || dev.brightness[0] != 7 {
+		t.Errorf("brightness = %v, want [7]", dev.brightness)
+	}
+}
+
+func TestSetBrightnessGivesUpAtDeadline(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second}}
+	dev := &fakeDevice{failSetTimes: 1_000_000} // always fail
+	a := New(cfg, testLogger(), Deps{Device: dev})
+	a.retryInitial, a.retryMax, a.retryDeadline = time.Millisecond, time.Millisecond, 20*time.Millisecond
+
+	a.setBrightness(context.Background(), 7)
+
+	if len(dev.brightness) != 0 {
+		t.Errorf("brightness = %v, want none applied", dev.brightness)
+	}
+	if dev.setCalls < 2 {
+		t.Errorf("setCalls = %d, want >= 2 (retried before giving up)", dev.setCalls)
+	}
+}
+
+func TestSetBrightnessCancelStopsRetry(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second}}
+	dev := &fakeDevice{failSetTimes: 1_000_000} // always fail
+	a := New(cfg, testLogger(), Deps{Device: dev})
+	a.retryInitial, a.retryMax, a.retryDeadline = 10*time.Millisecond, 10*time.Millisecond, time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	a.setBrightness(ctx, 7) // must return on ctx cancel, not run to the 1h deadline
+
+	if dev.setCalls == 0 {
+		t.Error("expected at least one attempt")
 	}
 }
 

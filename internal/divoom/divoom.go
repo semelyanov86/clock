@@ -65,6 +65,7 @@ type apiResponse struct {
 	ReturnCode    int    `json:"ReturnCode"`
 	ReturnMessage string `json:"ReturnMessage"`
 	ClockID       int    `json:"ClockId"`
+	Brightness    int    `json:"Brightness"`
 }
 
 // Ping issues a cheap read-only command to confirm the device is reachable.
@@ -86,6 +87,15 @@ func (c *Client) SetBrightness(ctx context.Context, level int) error {
 	}
 	_, err := c.command(ctx, "Channel/SetBrightness", map[string]any{"Brightness": level})
 	return err
+}
+
+// GetBrightness reads the current display brightness (0–100).
+func (c *Client) GetBrightness(ctx context.Context) (int, error) {
+	r, err := c.command(ctx, "Sys/GetBrightness", nil)
+	if err != nil {
+		return 0, err
+	}
+	return r.Brightness, nil
 }
 
 // CreateLocalClock creates a new local dial from a background image plus an
