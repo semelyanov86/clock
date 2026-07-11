@@ -58,7 +58,7 @@ func TestLoadDefaultBrightnessSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := []BrightnessPoint{{4, 0, 1}, {5, 0, 3}, {6, 0, 4}, {7, 0, 7}, {8, 0, 15}}
+	want := []BrightnessPoint{{4, 0, 1}, {5, 0, 9}, {6, 0, 25}, {7, 0, 40}, {8, 0, 50}}
 	if len(c.BrightnessSchedule) != len(want) {
 		t.Fatalf("BrightnessSchedule = %+v, want %+v", c.BrightnessSchedule, want)
 	}

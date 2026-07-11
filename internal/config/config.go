@@ -321,7 +321,7 @@ func envBool(key string, def bool) (bool, error) {
 // defaultBrightnessSchedule ramps the display up in the morning (Berlin time):
 // the user blanks it at night, these points restore it. Override via
 // BRIGHTNESS_SCHEDULE; set it empty to disable the scheduler.
-const defaultBrightnessSchedule = "04:00=1,05:00=3,06:00=4,07:00=7,08:00=15"
+const defaultBrightnessSchedule = "04:00=1,05:00=9,06:00=25,07:00=40,08:00=50"
 
 // parseBrightnessSchedule parses "HH:MM=LEVEL,HH:MM=LEVEL,…" into schedule
 // points. An empty string disables the scheduler; a present-but-malformed value
