@@ -175,22 +175,29 @@ type Quote struct {
 	Author string
 }
 
-// ClaudeWindow is one rolling rate-limit window from Claude's unified limits
-// (the same data Claude Code shows in /usage). Utilization is the fraction of
-// the window consumed (0..1); ResetAt is when it rolls over.
-type ClaudeWindow struct {
+// UsageWindow is one rolling provider rate-limit window. Utilization is the
+// fraction consumed (0..1), Duration is the window length, and ResetAt is when
+// it rolls over. Valid distinguishes an unavailable window from a real 0%.
+type UsageWindow struct {
 	Utilization float64
+	Duration    time.Duration
 	ResetAt     time.Time
+	Valid       bool
 }
 
-// ClaudeUsage mirrors Claude's unified rate-limit usage: the rolling 5-hour
-// block and the weekly window. Valid is false when the data could not be
-// fetched, so the renderer can show a placeholder instead of zeroes.
-type ClaudeUsage struct {
-	Updated time.Time
-	Block5h ClaudeWindow
-	Weekly  ClaudeWindow
-	Valid   bool
+// ProviderUsage is the latest short and long rate-limit windows for one AI
+// provider. Stale means a refresh failed after a previous successful fetch, so
+// the last known values remain useful but must be labelled accordingly.
+type ProviderUsage struct {
+	Updated   time.Time
+	Primary   UsageWindow
+	Secondary UsageWindow
+	Stale     bool
+}
+
+// Available reports whether at least one real usage window is present.
+func (u ProviderUsage) Available() bool {
+	return u.Primary.Valid || u.Secondary.Valid
 }
 
 // Snapshot is the immutable view of all data the renderer needs for one frame.
@@ -204,5 +211,6 @@ type Snapshot struct {
 	FX        []Instrument
 	News      []NewsItem
 	Quotes    []Quote
-	Claude    ClaudeUsage
+	Claude    ProviderUsage
+	Codex     ProviderUsage
 }

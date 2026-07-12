@@ -12,6 +12,8 @@ Type=simple
 User=sergey
 Group=sergey
 WorkingDirectory=/var/www/clock/current
+Environment=HOME=/home/sergey
+Environment=CODEX_HOME=/home/sergey/.codex
 EnvironmentFile=-/var/www/clock/shared/clock-secrets
 EnvironmentFile=/var/www/clock/shared/clock-env
 ExecStart=/var/www/clock/current/clock
@@ -20,9 +22,8 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-# /var/www/clock for releases; ~/.claude so the in-process OAuth refresh can
-# rewrite the Claude Code credentials file under the read-only home.
-ReadWritePaths=/var/www/clock /home/sergey/.claude
+# /var/www/clock for releases; provider homes for CLI-managed auth/cache state.
+ReadWritePaths=/var/www/clock /home/sergey/.claude /home/sergey/.codex
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

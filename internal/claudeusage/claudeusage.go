@@ -120,7 +120,7 @@ func New(credentialsPath string, timeout time.Duration, opts ...Option) *Client 
 // Fetch probes the API and returns the 5-hour and weekly usage windows. When
 // the probe is rejected with 401 and refresh is enabled, it refreshes the token
 // once and retries.
-func (c *Client) Fetch(ctx context.Context) (model.ClaudeUsage, error) {
+func (c *Client) Fetch(ctx context.Context) (model.ProviderUsage, error) {
 	usage, status, err := c.probe(ctx)
 	if err != nil && status == http.StatusUnauthorized && c.store != nil && c.store.refresh {
 		if rerr := c.store.refreshOn401(ctx); rerr != nil {
@@ -146,10 +146,10 @@ func (c *Client) ForceRefresh(ctx context.Context) (oldExpiry, newExpiry time.Ti
 
 // probe sends one minimal Claude Code message and reads the unified rate-limit
 // headers, returning the HTTP status so callers can react to auth failures.
-func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
+func (c *Client) probe(ctx context.Context) (model.ProviderUsage, int, error) {
 	token, err := c.token(ctx)
 	if err != nil {
-		return model.ClaudeUsage{}, 0, fmt.Errorf("read oauth token: %w", err)
+		return model.ProviderUsage{}, 0, fmt.Errorf("read oauth token: %w", err)
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -159,12 +159,12 @@ func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
 		"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 	})
 	if err != nil {
-		return model.ClaudeUsage{}, 0, fmt.Errorf("encode request: %w", err)
+		return model.ProviderUsage{}, 0, fmt.Errorf("encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return model.ClaudeUsage{}, 0, fmt.Errorf("new request: %w", err)
+		return model.ProviderUsage{}, 0, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("authorization", "Bearer "+token)
 	req.Header.Set("anthropic-version", anthropicVersion)
@@ -173,7 +173,7 @@ func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return model.ClaudeUsage{}, 0, fmt.Errorf("probe anthropic api: %w", err)
+		return model.ProviderUsage{}, 0, fmt.Errorf("probe anthropic api: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// The body is unused; drain it (bounded) so the connection can be reused.
@@ -181,7 +181,7 @@ func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
 
 	usage, ok := parseUsage(resp.Header)
 	if !ok {
-		return model.ClaudeUsage{}, resp.StatusCode, fmt.Errorf("no unified rate-limit headers in response (http %d)", resp.StatusCode)
+		return model.ProviderUsage{}, resp.StatusCode, fmt.Errorf("no unified rate-limit headers in response (http %d)", resp.StatusCode)
 	}
 	usage.Updated = time.Now()
 	return usage, resp.StatusCode, nil
@@ -190,16 +190,25 @@ func (c *Client) probe(ctx context.Context) (model.ClaudeUsage, int, error) {
 // parseUsage extracts the unified rate-limit windows from the response headers.
 // It returns ok=false when the 5-hour utilization header is absent (e.g. an
 // auth failure that carries no rate-limit data).
-func parseUsage(h http.Header) (model.ClaudeUsage, bool) {
+func parseUsage(h http.Header) (model.ProviderUsage, bool) {
 	u5, ok := parseFloat(h.Get("anthropic-ratelimit-unified-5h-utilization"))
 	if !ok {
-		return model.ClaudeUsage{}, false
+		return model.ProviderUsage{}, false
 	}
-	u7, _ := parseFloat(h.Get("anthropic-ratelimit-unified-7d-utilization"))
-	return model.ClaudeUsage{
-		Block5h: model.ClaudeWindow{Utilization: u5, ResetAt: parseUnix(h.Get("anthropic-ratelimit-unified-5h-reset"))},
-		Weekly:  model.ClaudeWindow{Utilization: u7, ResetAt: parseUnix(h.Get("anthropic-ratelimit-unified-7d-reset"))},
-		Valid:   true,
+	u7, weeklyValid := parseFloat(h.Get("anthropic-ratelimit-unified-7d-utilization"))
+	return model.ProviderUsage{
+		Primary: model.UsageWindow{
+			Utilization: u5,
+			Duration:    5 * time.Hour,
+			ResetAt:     parseUnix(h.Get("anthropic-ratelimit-unified-5h-reset")),
+			Valid:       true,
+		},
+		Secondary: model.UsageWindow{
+			Utilization: u7,
+			Duration:    7 * 24 * time.Hour,
+			ResetAt:     parseUnix(h.Get("anthropic-ratelimit-unified-7d-reset")),
+			Valid:       weeklyValid,
+		},
 	}, true
 }
 

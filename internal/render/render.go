@@ -19,8 +19,8 @@ import (
 	"github.com/semelyanov86/clock/internal/model"
 )
 
-// numPages is the number of base rotating body pages. The optional
-// Claude-usage page is appended at render time when its data is present.
+// numPages is the number of base rotating body pages. The optional AI-usage
+// page is appended at render time when either provider has data.
 const numPages = 3
 
 // maxJPEGBytes is the device limit for a dial background.
@@ -62,15 +62,15 @@ func (r *Renderer) Render(snap model.Snapshot, frame int) ([]byte, error) {
 
 	body := rect{x: 20, y: headerBottom + 14, w: CanvasW - 40, h: CanvasH - 20 - (headerBottom + 14) - 44}
 
-	// The base pages always rotate; the Claude-usage page joins the rotation
-	// only when its data is present (the widget is opt-in).
+	// The base pages always rotate; the AI-usage page joins the rotation when at
+	// least one provider has data (both widgets are independently opt-in).
 	pages := []func(rect){
 		func(a rect) { r.pagePortfolio(dc, snap, a) },
 		func(a rect) { r.pageMarkets(dc, snap, a) },
 		func(a rect) { r.pageInfo(dc, snap, frame, a) },
 	}
-	if snap.Claude.Valid {
-		pages = append(pages, func(a rect) { r.pageClaude(dc, snap, a) })
+	if snap.Claude.Available() || snap.Codex.Available() {
+		pages = append(pages, func(a rect) { r.pageAILimits(dc, snap, a) })
 	}
 
 	page := cycleIndex(frame, len(pages))

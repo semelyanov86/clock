@@ -59,12 +59,13 @@ tasks:
       - go run {{.MAIN}}
 
   preview:
-    desc: Render the three pages with built-in sample data to preview_*.jpg (no network/device)
+    desc: Render all four pages with built-in sample data to preview_*.jpg (no network/device)
     cmds:
       - go run {{.MAIN}} --once --fake --frame 0 --out preview_portfolio.jpg
       - go run {{.MAIN}} --once --fake --frame 1 --out preview_markets.jpg
       - go run {{.MAIN}} --once --fake --frame 2 --out preview_info.jpg
-      - echo "Wrote preview_portfolio.jpg / preview_markets.jpg / preview_info.jpg"
+      - go run {{.MAIN}} --once --fake --frame 3 --out preview_ai_limits.jpg
+      - echo "Wrote preview_portfolio.jpg / preview_markets.jpg / preview_info.jpg / preview_ai_limits.jpg"
 
   preview:live:
     desc: 'Render one frame with REAL data to {{.PREVIEW}} (reads .env). Page via FRAME=N: `task preview:live FRAME=1`'

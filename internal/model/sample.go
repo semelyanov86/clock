@@ -54,11 +54,35 @@ func SampleSnapshot(now time.Time) Snapshot {
 			{Text: "The only way to do great work is to love what you do.", Author: "Steve Jobs"},
 			{Text: "Risk comes from not knowing what you are doing.", Author: "Warren Buffett"},
 		},
-		Claude: ClaudeUsage{
+		Claude: ProviderUsage{
 			Updated: now,
-			Block5h: ClaudeWindow{Utilization: 0.33, ResetAt: now.Add(2*time.Hour + 13*time.Minute)},
-			Weekly:  ClaudeWindow{Utilization: 0.71, ResetAt: now.Add(5 * 24 * time.Hour)},
-			Valid:   true,
+			Primary: UsageWindow{
+				Utilization: 0.33,
+				Duration:    5 * time.Hour,
+				ResetAt:     now.Add(2*time.Hour + 13*time.Minute),
+				Valid:       true,
+			},
+			Secondary: UsageWindow{
+				Utilization: 0.71,
+				Duration:    7 * 24 * time.Hour,
+				ResetAt:     now.Add(5 * 24 * time.Hour),
+				Valid:       true,
+			},
+		},
+		Codex: ProviderUsage{
+			Updated: now,
+			Primary: UsageWindow{
+				Utilization: 0.24,
+				Duration:    5 * time.Hour,
+				ResetAt:     now.Add(3*time.Hour + 8*time.Minute),
+				Valid:       true,
+			},
+			Secondary: UsageWindow{
+				Utilization: 0.08,
+				Duration:    7 * 24 * time.Hour,
+				ResetAt:     now.Add(6*24*time.Hour + 4*time.Hour),
+				Valid:       true,
+			},
 		},
 	}
 }

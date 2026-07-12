@@ -220,45 +220,71 @@ func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrumen
 	r.chip(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-28, 0, 19, deltaColor(fx.Delta))
 }
 
-// pageClaude shows Claude's unified rate-limit usage: the rolling 5-hour block
-// and the weekly window, each as a labelled gauge. The page only appears when
-// the data is present (see Render).
-func (r *Renderer) pageClaude(dc *gg.Context, snap model.Snapshot, area rect) {
-	y := r.sectionTitle(dc, area, "ЛИМИТЫ CLAUDE")
-	u := snap.Claude
-	if !u.Valid {
-		r.text(dc, "нет данных", area.x+area.w/2, y+60, 0.5, fontRegular, 24, theme.muted)
+// pageAILimits shows Claude and Codex side by side. Each provider owns one
+// column with its short and long windows, so a missing provider can show a
+// placeholder without hiding fresh data from the other one.
+func (r *Renderer) pageAILimits(dc *gg.Context, snap model.Snapshot, area rect) {
+	y := r.sectionTitle(dc, area, "ЛИМИТЫ AI") + 8
+	const columnGap = 16
+	columnW := (area.w - columnGap) / 2
+	now := snap.Generated.In(r.loc)
+
+	r.usageColumn(dc, area.x, y, columnW, area, "CLAUDE", snap.Claude, now)
+	r.usageColumn(dc, area.x+columnW+columnGap, y, columnW, area, "CODEX", snap.Codex, now)
+}
+
+func (r *Renderer) usageColumn(
+	dc *gg.Context,
+	x, y, w float64,
+	area rect,
+	provider string,
+	usage model.ProviderUsage,
+	now time.Time,
+) {
+	const (
+		headerH = 48
+		cardGap = 16
+	)
+	r.text(dc, provider, x+2, y+21, 0, fontBold, 26, theme.accent)
+	switch {
+	case usage.Stale:
+		r.chip(dc, "УСТАРЕЛО", x+w-2, y+21, 1, 14, theme.accent2)
+	case usage.Available() && !usage.Updated.IsZero():
+		r.text(dc, usage.Updated.In(r.loc).Format("15:04"), x+w-2, y+21, 1, fontMono, 17, theme.faint)
+	}
+
+	cardY := y + headerH
+	availableH := area.y + area.h - cardY
+	cardH := (availableH - cardGap) / 2
+	r.usageGauge(dc, x, cardY, w, cardH, "5 ЧАСОВ", usage.Primary, now)
+	cardY += cardH + cardGap
+	r.usageGauge(dc, x, cardY, w, cardH, "НЕДЕЛЯ", usage.Secondary, now)
+}
+
+// usageGauge draws one compact rate-limit card: title, percentage, progress bar,
+// and reset countdown. Invalid windows render a placeholder rather than 0%.
+func (r *Renderer) usageGauge(dc *gg.Context, x, y, w, h float64, title string, win model.UsageWindow, now time.Time) {
+	fillPanel(dc, x, y, w, h, 18)
+	if !win.Valid {
+		r.text(dc, title, x+22, y+34, 0, fontBold, 20, theme.muted)
+		r.text(dc, "НЕТ ДАННЫХ", x+w/2, y+h/2+8, 0.5, fontBold, 22, theme.faint)
 		return
 	}
 
-	now := snap.Generated.In(r.loc)
-	const gaugeH = 250
-	y += 14
-	r.usageGauge(dc, area.x, y, area.w, gaugeH, "5 ЧАСОВ", u.Block5h, now)
-	y += gaugeH + 28
-	r.usageGauge(dc, area.x, y, area.w, gaugeH, "НЕДЕЛЯ", u.Weekly, now)
-	// The frame footer already carries the "обновлено HH:MM:SS" timestamp, so the
-	// gauges do not repeat it here.
-}
-
-// usageGauge draws one labelled rate-limit window: a status dot + title, a large
-// percentage, a gradient progress bar, and a reset countdown.
-func (r *Renderer) usageGauge(dc *gg.Context, x, y, w, h float64, title string, win model.ClaudeWindow, now time.Time) {
-	fillPanel(dc, x, y, w, h, 18)
 	col := usageColor(win.Utilization)
 
 	dc.SetHexColor(col)
-	dc.DrawCircle(x+38, y+46, 9)
+	dc.DrawCircle(x+24, y+34, 7)
 	dc.Fill()
-	r.text(dc, title, x+60, y+46, 0, fontBold, 28, theme.text)
+	r.text(dc, title, x+40, y+34, 0, fontBold, 20, theme.text)
 
 	pct := strconv.Itoa(int(math.Round(win.Utilization*100))) + "%"
-	r.text(dc, pct, x+w-28, y+56, 1, fontBold, 74, col)
+	r.text(dc, pct, x+w-20, y+50, 1, fontBold, 52, col)
 
-	drawPercentageBar(dc, x+30, y+h*0.55, w-60, 30, win.Utilization, col)
+	drawPercentageBar(dc, x+22, y+h*0.55, w-44, 22, win.Utilization, col)
 
 	if s := humanizeUntil(now, win.ResetAt); s != "" {
-		r.text(dc, s, x+30, y+h-34, 0, fontRegular, 22, theme.muted)
+		r.text(dc, s, x+22, y+h-28, 0, fontRegular, 18, theme.muted)
 	}
 }
 

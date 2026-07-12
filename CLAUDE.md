@@ -213,8 +213,9 @@
 
 ## Go-сервис: скиллы, правила разработки и деплой
 
-Рендерер картинки 800×1280 + пушер на устройство пишется на **Go**. Локально установлены
-Go 1.25.1 и `task` (go-task) 3.51.1.
+Рендерер картинки 800×1280 + пушер на устройство пишется на **Go**. Минимальная версия —
+Go 1.25.12 (содержит security-fixes стандартной библиотеки); локально установлен `task`
+(go-task) 3.51.1.
 
 ### Подключённые Go-скиллы (правила для кода проекта)
 
@@ -468,10 +469,10 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 - `getMarketReviews` (новости) → `list[]` с `title`/`date`. favqs + Open-Meteo — ок.
 
 **Запуск:**
-- `task preview` — 3 страницы на фейковых данных → `preview_*.jpg` (без сети/устройства).
+- `task preview` — 4 страницы на фейковых данных → `preview_*.jpg` (без сети/устройства).
 - `task preview:live` / `task push` — реальные данные (читает `.env`), пуш на устройство.
 - `task run` — сервисный цикл; `task build` / `build:linux` / `deploy`.
-- Превью без секретов: `./bin/clock --once --fake --frame {0|1|2} --out f.jpg`.
+- Превью без секретов: `./bin/clock --once --fake --frame {0|1|2|3} --out f.jpg`.
 
 **Шрифты встроены через `go:embed`** (`internal/render/fonts/DejaVu*`) → бинарь самодостаточный,
 системные шрифты на сервере не нужны.
@@ -488,17 +489,18 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
   Шаблон конфига — `.mcp.json.example`. Транзитивные npm-уязвимости устранены (`npm audit fix`).
 - **HTTP-клиенты:** таймаут + `io.LimitReader` (4 MiB) на каждом ответе; ошибки оборачиваются `%w`.
 
-### Виджет «Лимиты Claude» (opt-in, 2026-06-07)
+### Виджет «Лимиты AI» — Claude + Codex (opt-in, 2026-06-07 / 2026-07-12)
 
-Опциональная 4-я страница ротации: два гейджа — **5-часовой блок** и **недельное окно**
-использования лимитов Claude (как в `/usage`). Пакет `internal/claudeusage` читает OAuth-токен
+Опциональная 4-я страница ротации: две колонки **Claude / Codex**, в каждой — **5-часовой
+блок** и **недельное окно**. Пакет `internal/claudeusage` читает OAuth-токен
 Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`-запрос (`max_tokens:1`,
 системный промпт Claude Code, `anthropic-beta: oauth-2025-04-20`) на `api.anthropic.com`, забирая
 заголовки `anthropic-ratelimit-unified-5h/7d-utilization` + `-reset`. **Подтверждено вживую**
 (`count_tokens` заголовки НЕ отдаёт; `messages` — отдаёт).
 
-- **Opt-in:** `CLAUDE_USAGE_ENABLED=true` (по умолчанию выкл). Когда выкл/нет данных — страница
-  не показывается (динамический счётчик страниц в `render.go`; smoke-тест покрывает 3- и 4-стр.).
+- **Opt-in независимо:** `CLAUDE_USAGE_ENABLED=true` и/или `CODEX_USAGE_ENABLED=true`
+  (по умолчанию оба выкл). Страница появляется, если доступен хотя бы один источник; второй
+  показывает placeholder. После ошибки остаются последние успешные данные с меткой «УСТАРЕЛО».
 - **«Серая зона»:** подписочный OAuth-токен вне Claude Code + недокументированные заголовки —
   могут сломаться. Каждый опрос тратит ~1 токен той же квоты, что показывает.
 - **Где креды:** токен читается на каждый опрос. **Авто-рефреш — через официальный `claude` CLI (РЕШЕНО, 2026-06-10).**
@@ -516,7 +518,17 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
 - **ENV:** `CLAUDE_USAGE_ENABLED`, `CLAUDE_CREDENTIALS_PATH` (деф. `~/.claude/.credentials.json`),
   `CLAUDE_USAGE_MODEL` (деф. `claude-haiku-4-5-20251001`), `CLAUDE_API_URL`, `CLAUDE_USAGE_INTERVAL` (деф. 5m),
   `CLAUDE_OAUTH_REFRESH` (деф. **false** — рефреш делает CLI-таймер, см. выше), `CLAUDE_OAUTH_TOKEN_URL`, `CLAUDE_OAUTH_CLIENT_ID`.
-- Превью: `./bin/clock --once --fake --frame 3 --out preview_claude.jpg`.
+- **Codex:** `internal/codexusage` на каждый опрос запускает короткоживущий
+  `codex app-server --stdio`, выполняет `initialize` → `initialized` →
+  `account/rateLimits/read` и читает только основной backward-compatible bucket
+  `result.rateLimits`. Модельный turn не создаётся; Spark bucket намеренно не показывается.
+  JSONL и stderr ограничены по размеру, процесс привязан к context timeout.
+- **Codex ENV:** `CODEX_USAGE_ENABLED`, `CODEX_BIN` (на production абсолютный
+  `/home/sergey/.local/bin/codex`), `CODEX_USAGE_INTERVAL` (деф. 5m). В systemd заданы
+  `HOME`, `CODEX_HOME` и writable `/home/sergey/.codex`, чтобы официальный CLI управлял auth/cache.
+- **Codex E2E:** основной bucket подтверждён через новый Go-клиент локально 2026-07-12;
+  официальный app-server отдельно проверен на `sergeyem.ru` (Codex CLI 0.144.1).
+- Превью: `./bin/clock --once --fake --frame 3 --out preview_ai_limits.jpg`.
 
 ## Статус
 
@@ -537,8 +549,8 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
       €11 760 + позиции, рынки, погода, новости, цитата, лимиты Claude — всё корректно.
 - [ ] **E2E устройства:** первый `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`;
       выставить на приборе Берлин+24ч. (изображения в часы пока НЕ отправлялись.)
-- [x] Виджет «Лимиты Claude» (opt-in): пакет `internal/claudeusage`, 4-я страница ротации,
-      probe заголовков подтверждён вживую (см. подраздел выше). Включается `CLAUDE_USAGE_ENABLED=true`.
+- [x] Виджет «Лимиты AI» (opt-in): Claude + основной Codex bucket, общий экран 2×2,
+      независимые partial/stale состояния и live-проверенные источники (см. подраздел выше).
 - [x] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер `sergey`, systemd-юнит
       `clock.service`, авто-деплой через GitHub Actions. Рефреш OAuth-токена Claude решён в коде
-      (см. подраздел выше + `deploy/clock.service` с `ReadWritePaths=/home/sergey/.claude`).
+      (см. подраздел выше + `deploy/clock.service` с writable homes Claude/Codex).

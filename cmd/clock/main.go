@@ -24,6 +24,7 @@ import (
 
 	"github.com/semelyanov86/clock/internal/app"
 	"github.com/semelyanov86/clock/internal/claudeusage"
+	"github.com/semelyanov86/clock/internal/codexusage"
 	"github.com/semelyanov86/clock/internal/config"
 	"github.com/semelyanov86/clock/internal/divoom"
 	"github.com/semelyanov86/clock/internal/favqs"
@@ -106,6 +107,13 @@ func wire(cfg config.Config, log *slog.Logger, rnd *render.Renderer) app.Deps {
 			"model", cfg.Claude.Model, "oauthRefresh", cfg.Claude.OAuthRefresh)
 	} else {
 		log.Info("Claude usage widget disabled (set CLAUDE_USAGE_ENABLED=true to enable)")
+	}
+
+	if cfg.HasCodex() {
+		deps.Codex = codexusage.New(cfg.Codex.Bin)
+		log.Info("Codex usage widget enabled", "binary", cfg.Codex.Bin)
+	} else {
+		log.Info("Codex usage widget disabled (set CODEX_USAGE_ENABLED=true to enable)")
 	}
 
 	if cfg.HasFreedom() {

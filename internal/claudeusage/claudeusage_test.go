@@ -46,16 +46,16 @@ func TestFetchParsesHeaders(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	if !u.Valid {
+	if !u.Available() {
 		t.Fatal("usage not valid")
 	}
-	if u.Block5h.Utilization != 0.33 || u.Weekly.Utilization != 0.03 {
-		t.Errorf("utilization = %v / %v, want 0.33 / 0.03", u.Block5h.Utilization, u.Weekly.Utilization)
+	if u.Primary.Utilization != 0.33 || u.Secondary.Utilization != 0.03 {
+		t.Errorf("utilization = %v / %v, want 0.33 / 0.03", u.Primary.Utilization, u.Secondary.Utilization)
 	}
-	if got := u.Block5h.ResetAt.Unix(); got != 1780850400 {
+	if got := u.Primary.ResetAt.Unix(); got != 1780850400 {
 		t.Errorf("5h reset = %d, want 1780850400", got)
 	}
-	if got := u.Weekly.ResetAt.Unix(); got != 1781438400 {
+	if got := u.Secondary.ResetAt.Unix(); got != 1781438400 {
 		t.Errorf("7d reset = %d, want 1781438400", got)
 	}
 	if u.Updated.IsZero() {

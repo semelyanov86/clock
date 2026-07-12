@@ -18,7 +18,8 @@ type store struct {
 	fx        []model.Instrument
 	news      []model.NewsItem
 	quotes    []model.Quote
-	claude    model.ClaudeUsage
+	claude    model.ProviderUsage
+	codex     model.ProviderUsage
 }
 
 func newStore() *store { return &store{} }
@@ -55,9 +56,33 @@ func (s *store) setQuotes(q []model.Quote) {
 	s.mu.Unlock()
 }
 
-func (s *store) setClaude(u model.ClaudeUsage) {
+func (s *store) setClaude(u model.ProviderUsage) {
 	s.mu.Lock()
+	u.Stale = false
 	s.claude = u
+	s.mu.Unlock()
+}
+
+func (s *store) markClaudeStale() {
+	s.mu.Lock()
+	if s.claude.Available() {
+		s.claude.Stale = true
+	}
+	s.mu.Unlock()
+}
+
+func (s *store) setCodex(u model.ProviderUsage) {
+	s.mu.Lock()
+	u.Stale = false
+	s.codex = u
+	s.mu.Unlock()
+}
+
+func (s *store) markCodexStale() {
+	s.mu.Lock()
+	if s.codex.Available() {
+		s.codex.Stale = true
+	}
 	s.mu.Unlock()
 }
 
@@ -75,5 +100,6 @@ func (s *store) snapshot(now time.Time) model.Snapshot {
 		News:      append([]model.NewsItem(nil), s.news...),
 		Quotes:    append([]model.Quote(nil), s.quotes...),
 		Claude:    s.claude,
+		Codex:     s.codex,
 	}
 }

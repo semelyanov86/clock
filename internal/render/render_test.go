@@ -18,12 +18,22 @@ func TestRenderProducesValidJPEG(t *testing.T) {
 	}
 
 	now := time.Date(2026, 6, 7, 14, 32, 0, 0, time.UTC)
+	claudeOnly := model.SampleSnapshot(now)
+	claudeOnly.Codex = model.ProviderUsage{}
+	codexOnly := model.SampleSnapshot(now)
+	codexOnly.Claude = model.ProviderUsage{}
 	snaps := map[string]model.Snapshot{
-		"sample": model.SampleSnapshot(now),
-		"empty":  {Generated: now}, // no data must not panic
+		"both providers": model.SampleSnapshot(now),
+		"Claude only":    claudeOnly,
+		"Codex only":     codexOnly,
+		"empty":          {Generated: now}, // no data must not panic
 	}
 	for name, snap := range snaps {
-		for frame := 0; frame < numPages; frame++ {
+		pageCount := numPages
+		if snap.Claude.Available() || snap.Codex.Available() {
+			pageCount++
+		}
+		for frame := 0; frame < pageCount; frame++ {
 			data, err := r.Render(snap, frame)
 			if err != nil {
 				t.Fatalf("%s frame %d: %v", name, frame, err)

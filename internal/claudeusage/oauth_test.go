@@ -265,7 +265,7 @@ func TestFetchRefreshesOn401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if !u.Valid || u.Block5h.Utilization != 0.20 {
+	if !u.Available() || u.Primary.Utilization != 0.20 {
 		t.Errorf("usage = %+v, want valid with 0.20 5h utilization", u)
 	}
 	if calls < 2 {

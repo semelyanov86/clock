@@ -21,6 +21,12 @@ func TestLoadValidDefaults(t *testing.T) {
 	if c.HasFreedom() || c.HasFavqs() {
 		t.Errorf("expected no credentials in a clean env")
 	}
+	if c.HasCodex() {
+		t.Error("Codex usage should be opt-in")
+	}
+	if c.Intervals.Codex <= 0 {
+		t.Errorf("Codex interval not defaulted: %v", c.Intervals.Codex)
+	}
 }
 
 func TestLoadInvalidValuesAreErrors(t *testing.T) {
@@ -40,6 +46,8 @@ func TestLoadInvalidValuesAreErrors(t *testing.T) {
 		{"bad brightness entry", "BRIGHTNESS_SCHEDULE", "04:00"},
 		{"bad brightness level", "BRIGHTNESS_SCHEDULE", "04:00=200"},
 		{"bad brightness hour", "BRIGHTNESS_SCHEDULE", "25:00=1"},
+		{"bad Codex enabled", "CODEX_USAGE_ENABLED", "maybe"},
+		{"non-positive Codex interval", "CODEX_USAGE_INTERVAL", "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,6 +57,22 @@ func TestLoadInvalidValuesAreErrors(t *testing.T) {
 				t.Fatalf("expected error for %s=%q", tt.key, tt.val)
 			}
 		})
+	}
+}
+
+func TestLoadCodexUsageEnabled(t *testing.T) {
+	t.Setenv("CODEX_USAGE_ENABLED", "true")
+	t.Setenv("CODEX_BIN", "/home/sergey/.local/bin/codex")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.HasCodex() {
+		t.Error("HasCodex should be true")
+	}
+	if c.Codex.Bin != "/home/sergey/.local/bin/codex" {
+		t.Errorf("Codex.Bin = %q", c.Codex.Bin)
 	}
 }
 

@@ -45,9 +45,9 @@ type QuoteTextSource interface {
 	Fetch(ctx context.Context) ([]model.Quote, error)
 }
 
-// ClaudeUsageSource fetches Claude's unified rate-limit usage (5h + weekly).
-type ClaudeUsageSource interface {
-	Fetch(ctx context.Context) (model.ClaudeUsage, error)
+// UsageSource fetches one provider's short and long rate-limit windows.
+type UsageSource interface {
+	Fetch(ctx context.Context) (model.ProviderUsage, error)
 }
 
 // Renderer renders a frame to JPEG bytes.
@@ -73,7 +73,8 @@ type Deps struct {
 	News      NewsSource
 	Quotes    QuoteSource
 	QuoteText QuoteTextSource
-	Claude    ClaudeUsageSource
+	Claude    UsageSource
+	Codex     UsageSource
 	Renderer  Renderer
 	Device    Device
 }
@@ -226,7 +227,15 @@ func (a *App) Snapshot(now time.Time) model.Snapshot { return a.store.snapshot(n
 // refreshAll fetches every source once, in parallel, before the loop starts.
 func (a *App) refreshAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, fn := range []func(context.Context){a.doWeather, a.doMarkets, a.doPortfolio, a.doNews, a.doQuoteText, a.doClaude} {
+	for _, fn := range []func(context.Context){
+		a.doWeather,
+		a.doMarkets,
+		a.doPortfolio,
+		a.doNews,
+		a.doQuoteText,
+		a.doClaude,
+		a.doCodex,
+	} {
 		wg.Add(1)
 		go func(f func(context.Context)) {
 			defer wg.Done()
@@ -244,6 +253,7 @@ func (a *App) startFetchers(ctx context.Context) {
 	go a.periodic(ctx, a.cfg.Intervals.News, a.doNews)
 	go a.periodic(ctx, a.cfg.Intervals.Quote, a.doQuoteText)
 	go a.periodic(ctx, a.cfg.Intervals.Claude, a.doClaude)
+	go a.periodic(ctx, a.cfg.Intervals.Codex, a.doCodex)
 }
 
 func (a *App) periodic(ctx context.Context, interval time.Duration, fn func(context.Context)) {
@@ -433,10 +443,26 @@ func (a *App) doClaude(ctx context.Context) {
 	defer cancel()
 	u, err := a.deps.Claude.Fetch(ctx)
 	if err != nil {
+		a.store.markClaudeStale()
 		a.log.Warn("fetch claude usage", "err", err)
 		return
 	}
 	a.store.setClaude(u)
+}
+
+func (a *App) doCodex(ctx context.Context) {
+	if a.deps.Codex == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	u, err := a.deps.Codex.Fetch(ctx)
+	if err != nil {
+		a.store.markCodexStale()
+		a.log.Warn("fetch codex usage", "err", err)
+		return
+	}
+	a.store.setCodex(u)
 }
 
 // doMarkets fetches all instrument quotes in one batch and splits them into

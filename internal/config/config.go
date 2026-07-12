@@ -22,6 +22,7 @@ type Config struct {
 	Favqs     Favqs
 	Weather   Weather
 	Claude    Claude
+	Codex     Codex
 	Intervals Intervals
 	// BrightnessSchedule sets the display brightness at fixed times of day (in
 	// CLOCK_TZ). Empty disables the scheduler. The user drops brightness to 0 at
@@ -99,6 +100,14 @@ type Claude struct {
 	OAuthClientID string
 }
 
+// Codex holds settings for the optional Codex usage widget. The service invokes
+// the local CLI's app-server protocol and reads the main account rate-limit
+// bucket without starting a model turn.
+type Codex struct {
+	Enabled bool
+	Bin     string
+}
+
 // Intervals controls refresh cadence and frame rotation.
 type Intervals struct {
 	Frame     time.Duration
@@ -108,6 +117,7 @@ type Intervals struct {
 	News      time.Duration
 	Quote     time.Duration
 	Claude    time.Duration
+	Codex     time.Duration
 }
 
 // HasFreedom reports whether Freedom24 credentials are present.
@@ -119,6 +129,10 @@ func (c Config) HasFavqs() bool { return c.Favqs.Token != "" }
 // HasClaude reports whether the Claude-usage widget is enabled and has a
 // credentials path to read the OAuth token from.
 func (c Config) HasClaude() bool { return c.Claude.Enabled && c.Claude.CredentialsPath != "" }
+
+// HasCodex reports whether the Codex-usage widget is enabled and has a CLI
+// executable configured.
+func (c Config) HasCodex() bool { return c.Codex.Enabled && c.Codex.Bin != "" }
 
 // Load reads the configuration from the environment, applying defaults and
 // validating every value. It returns the joined set of all problems found.
@@ -179,6 +193,10 @@ func Load() (Config, error) {
 			OAuthTokenURL: env("CLAUDE_OAUTH_TOKEN_URL", "https://platform.claude.com/v1/oauth/token"),
 			OAuthClientID: env("CLAUDE_OAUTH_CLIENT_ID", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
 		},
+		Codex: Codex{
+			Enabled: getb("CODEX_USAGE_ENABLED", false),
+			Bin:     env("CODEX_BIN", "codex"),
+		},
 		Intervals: Intervals{
 			Frame:     getd("FRAME_INTERVAL", 13*time.Second),
 			Weather:   getd("WEATHER_INTERVAL", 10*time.Minute),
@@ -187,6 +205,7 @@ func Load() (Config, error) {
 			News:      getd("NEWS_INTERVAL", 5*time.Minute),
 			Quote:     getd("QUOTE_INTERVAL", 30*time.Minute),
 			Claude:    getd("CLAUDE_USAGE_INTERVAL", 5*time.Minute),
+			Codex:     getd("CODEX_USAGE_INTERVAL", 5*time.Minute),
 		},
 		BrightnessSchedule: brightness,
 		ClockTZ:            env("CLOCK_TZ", "Europe/Berlin"),
@@ -220,6 +239,7 @@ func (c Config) validate() []error {
 		"NEWS_INTERVAL":         c.Intervals.News,
 		"QUOTE_INTERVAL":        c.Intervals.Quote,
 		"CLAUDE_USAGE_INTERVAL": c.Intervals.Claude,
+		"CODEX_USAGE_INTERVAL":  c.Intervals.Codex,
 	} {
 		add(d > 0, name+" must be > 0")
 	}
@@ -248,6 +268,9 @@ func (c Config) validate() []error {
 				errs = append(errs, fmt.Errorf("CLAUDE_OAUTH_TOKEN_URL must be an http(s) URL, got %q", c.Claude.OAuthTokenURL))
 			}
 		}
+	}
+	if c.Codex.Enabled {
+		add(c.Codex.Bin != "", "CODEX_BIN must not be empty when CODEX_USAGE_ENABLED=true")
 	}
 	return errs
 }

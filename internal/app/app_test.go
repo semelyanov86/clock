@@ -22,6 +22,15 @@ func (f fakeQuotes) Quotes(_ context.Context, _ []string) (map[string]model.Inst
 	return f.m, nil
 }
 
+type fakeUsage struct {
+	usage model.ProviderUsage
+	err   error
+}
+
+func (f fakeUsage) Fetch(context.Context) (model.ProviderUsage, error) {
+	return f.usage, f.err
+}
+
 type fakeRenderer struct{}
 
 func (fakeRenderer) Render(_ model.Snapshot, _ int) ([]byte, error) { return []byte{0xFF, 0xD8}, nil }
@@ -112,6 +121,60 @@ func TestDoMarketsMapping(t *testing.T) {
 	}
 	if len(snap.FX) != 2 || snap.FX[0].Symbol != "EUR/RUB" || snap.FX[0].Name != "Евро" || snap.FX[0].Currency != "₽" {
 		t.Fatalf("FX = %+v", snap.FX)
+	}
+}
+
+func TestDoUsageSourcesRemainIndependent(t *testing.T) {
+	t.Parallel()
+
+	claude := model.ProviderUsage{
+		Primary: model.UsageWindow{Utilization: 0.31, Valid: true},
+	}
+	codex := model.ProviderUsage{
+		Primary: model.UsageWindow{Utilization: 0.12, Valid: true},
+	}
+	a := New(config.Config{}, testLogger(), Deps{
+		Claude: fakeUsage{usage: claude},
+		Codex:  fakeUsage{usage: codex},
+	})
+
+	a.doClaude(context.Background())
+	a.doCodex(context.Background())
+
+	snap := a.Snapshot(time.Now())
+	if snap.Claude.Primary.Utilization != 0.31 || snap.Codex.Primary.Utilization != 0.12 {
+		t.Fatalf("usage snapshot = Claude %+v, Codex %+v", snap.Claude, snap.Codex)
+	}
+	if snap.Claude.Stale || snap.Codex.Stale {
+		t.Fatal("successful usage fetch must not be stale")
+	}
+}
+
+func TestDoCodexFailureMarksPreviousValueStale(t *testing.T) {
+	t.Parallel()
+
+	codex := model.ProviderUsage{
+		Primary: model.UsageWindow{Utilization: 0.42, Valid: true},
+	}
+	a := New(config.Config{}, testLogger(), Deps{Codex: fakeUsage{usage: codex}})
+	a.doCodex(context.Background())
+	a.deps.Codex = fakeUsage{err: errors.New("temporarily unavailable")}
+	a.doCodex(context.Background())
+
+	got := a.Snapshot(time.Now()).Codex
+	if !got.Available() || !got.Stale {
+		t.Fatalf("Codex usage after error = %+v, want valid stale data", got)
+	}
+	if got.Primary.Utilization != 0.42 {
+		t.Errorf("stale utilization = %v, want 0.42", got.Primary.Utilization)
+	}
+
+	freshApp := New(config.Config{}, testLogger(), Deps{
+		Codex: fakeUsage{err: errors.New("initial failure")},
+	})
+	freshApp.doCodex(context.Background())
+	if initial := freshApp.Snapshot(time.Now()).Codex; initial.Available() || initial.Stale {
+		t.Errorf("initial failure produced usage: %+v", initial)
 	}
 }
 
