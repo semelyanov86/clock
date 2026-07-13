@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	defaultBinary    = "codex"
-	maxProtocolBytes = 1 << 20
-	maxStderrBytes   = 16 << 10
+	defaultBinary          = "codex"
+	maxProtocolBytes       = 1 << 20
+	maxStderrBytes         = 16 << 10
+	fiveHourWindowDuration = 5 * time.Hour
+	weeklyWindowDuration   = 7 * 24 * time.Hour
 )
 
 // Client reads Codex rate limits by invoking a local Codex CLI installation.
@@ -188,11 +190,33 @@ func parseResult(raw json.RawMessage) (model.ProviderUsage, error) {
 	if !primary.Valid && !secondary.Valid {
 		return model.ProviderUsage{}, fmt.Errorf("main codex bucket has no usage windows")
 	}
+	primary, secondary = normalizeWindows(primary, secondary)
 	return model.ProviderUsage{
 		Updated:   time.Now(),
 		Primary:   primary,
 		Secondary: secondary,
 	}, nil
+}
+
+func normalizeWindows(primary, secondary model.UsageWindow) (model.UsageWindow, model.UsageWindow) {
+	var fiveHour model.UsageWindow
+	var weekly model.UsageWindow
+	for _, window := range []model.UsageWindow{primary, secondary} {
+		switch window.Duration {
+		case fiveHourWindowDuration:
+			fiveHour = window
+		case weeklyWindowDuration:
+			weekly = window
+		}
+	}
+
+	if primary.Valid && primary.Duration == 0 {
+		fiveHour = primary
+	}
+	if secondary.Valid && secondary.Duration == 0 {
+		weekly = secondary
+	}
+	return fiveHour, weekly
 }
 
 func toUsageWindow(window *rateLimitWindow) (model.UsageWindow, error) {

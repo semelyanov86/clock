@@ -85,6 +85,37 @@ func TestExchangeAllowsMissingSecondaryWindow(t *testing.T) {
 	}
 }
 
+func TestExchangeMapsWeeklyPrimaryToWeeklyUsage(t *testing.T) {
+	t.Parallel()
+
+	input := strings.NewReader(strings.Join([]string{
+		`{"id":1,"result":{}}`,
+		`{"id":2,"result":{"rateLimits":{"limitId":"codex",` +
+			`"primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1784527511},` +
+			`"secondary":null,"planType":"prolite"}}}`,
+	}, "\n"))
+
+	got, err := exchange(input, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if got.Primary.Valid {
+		t.Errorf("five-hour usage should be invalid: %+v", got.Primary)
+	}
+	if !got.Secondary.Valid {
+		t.Fatalf("weekly usage should be valid: %+v", got.Secondary)
+	}
+	if got.Secondary.Duration != 7*24*time.Hour {
+		t.Errorf("weekly duration = %v, want 168h", got.Secondary.Duration)
+	}
+	if got.Secondary.Utilization != 0 {
+		t.Errorf("weekly utilization = %v, want 0", got.Secondary.Utilization)
+	}
+	if got.Secondary.ResetAt.Unix() != 1784527511 {
+		t.Errorf("weekly reset = %v", got.Secondary.ResetAt)
+	}
+}
+
 func TestExchangeReturnsRPCError(t *testing.T) {
 	t.Parallel()
 
@@ -238,7 +269,7 @@ func TestFetchLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if !usage.Available() || !usage.Primary.Valid {
+	if !usage.Available() {
 		t.Fatalf("live usage is incomplete: %+v", usage)
 	}
 	t.Logf(
