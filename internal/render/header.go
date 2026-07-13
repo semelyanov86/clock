@@ -65,7 +65,7 @@ func (r *Renderer) drawWeatherNow(dc *gg.Context, w model.Weather) {
 	// and from each other by hairline dividers, far more legible at a distance.
 	r.headerStat(dc, 466, "ОЩУЩ.", roundTemp(w.Now.FeelsC))
 	r.headerStat(dc, 578, "ВЛАЖН.", strconv.Itoa(w.Now.Humidity)+"%")
-	r.headerStat(dc, 698, "ВЕТЕР", strconv.Itoa(int(w.Now.WindKmh))+" км/ч")
+	r.headerStat(dc, 698, "ВЕТЕР", formatWind(w.Now.WindKmh))
 	dc.SetHexColor(theme.strokeSoft)
 	dc.SetLineWidth(1.5)
 	for _, dx := range []float64{416, 517, 639} {

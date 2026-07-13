@@ -220,45 +220,105 @@ func (r *Renderer) fxTile(dc *gg.Context, x, y, w, h float64, fx model.Instrumen
 	r.chip(dc, deltaArrow(fx.Delta)+" "+formatPct(fx.Delta), x+16, y+h-28, 0, 19, deltaColor(fx.Delta))
 }
 
-// pageAILimits shows Claude and Codex side by side. Each provider owns one
-// column with its short and long windows, so a missing provider can show a
-// placeholder without hiding fresh data from the other one.
+// pageAILimits shows Claude limits beside Codex weather and weekly usage. A
+// missing provider can show a placeholder without hiding fresh data from the
+// other one.
 func (r *Renderer) pageAILimits(dc *gg.Context, snap model.Snapshot, area rect) {
 	y := r.sectionTitle(dc, area, "ЛИМИТЫ AI") + 8
 	const columnGap = 16
 	columnW := (area.w - columnGap) / 2
-	now := snap.Generated.In(r.loc)
+	columnH := area.y + area.h - y
+	claudeArea := rect{x: area.x, y: y, w: columnW, h: columnH}
+	codexArea := rect{x: area.x + columnW + columnGap, y: y, w: columnW, h: columnH}
 
-	r.usageColumn(dc, area.x, y, columnW, area, "CLAUDE", snap.Claude, now)
-	r.usageColumn(dc, area.x+columnW+columnGap, y, columnW, area, "CODEX", snap.Codex, now)
+	r.claudeColumn(dc, claudeArea, snap)
+	r.codexColumn(dc, codexArea, snap)
 }
 
-func (r *Renderer) usageColumn(
+const (
+	usageColumnHeaderH = 48
+	usageCardGap       = 16
+)
+
+func (r *Renderer) claudeColumn(dc *gg.Context, area rect, snap model.Snapshot) {
+	usage := snap.Claude
+	now := snap.Generated.In(r.loc)
+	r.usageColumnHeader(dc, area, "CLAUDE", usage)
+	primary, secondary := usageColumnCards(area)
+	r.usageGauge(dc, primary.x, primary.y, primary.w, primary.h, "5 ЧАСОВ", usage.Primary, now)
+	r.usageGauge(dc, secondary.x, secondary.y, secondary.w, secondary.h, "НЕДЕЛЯ", usage.Secondary, now)
+}
+
+func (r *Renderer) codexColumn(dc *gg.Context, area rect, snap model.Snapshot) {
+	usage := snap.Codex
+	now := snap.Generated.In(r.loc)
+	r.usageColumnHeader(dc, area, "CODEX", usage)
+	weather, weekly := usageColumnCards(area)
+	r.weatherCard(dc, weather, snap.Weather.Now)
+	r.usageGauge(dc, weekly.x, weekly.y, weekly.w, weekly.h, "НЕДЕЛЯ", usage.Secondary, now)
+}
+
+func usageColumnCards(area rect) (rect, rect) {
+	cardY := area.y + usageColumnHeaderH
+	cardH := (area.h - usageColumnHeaderH - usageCardGap) / 2
+	primary := rect{x: area.x, y: cardY, w: area.w, h: cardH}
+	secondary := rect{x: area.x, y: cardY + cardH + usageCardGap, w: area.w, h: cardH}
+	return primary, secondary
+}
+
+func (r *Renderer) usageColumnHeader(
 	dc *gg.Context,
-	x, y, w float64,
 	area rect,
 	provider string,
 	usage model.ProviderUsage,
-	now time.Time,
 ) {
-	const (
-		headerH = 48
-		cardGap = 16
-	)
-	r.text(dc, provider, x+2, y+21, 0, fontBold, 26, theme.accent)
+	r.text(dc, provider, area.x+2, area.y+21, 0, fontBold, 26, theme.accent)
 	switch {
 	case usage.Stale:
-		r.chip(dc, "УСТАРЕЛО", x+w-2, y+21, 1, 14, theme.accent2)
+		r.chip(dc, "УСТАРЕЛО", area.x+area.w-2, area.y+21, 1, 14, theme.accent2)
 	case usage.Available() && !usage.Updated.IsZero():
-		r.text(dc, usage.Updated.In(r.loc).Format("15:04"), x+w-2, y+21, 1, fontMono, 17, theme.faint)
+		updated := usage.Updated.In(r.loc).Format("15:04")
+		r.text(dc, updated, area.x+area.w-2, area.y+21, 1, fontMono, 17, theme.faint)
+	}
+}
+
+func (r *Renderer) weatherCard(dc *gg.Context, area rect, weather model.WeatherNow) {
+	fillPanel(dc, area.x, area.y, area.w, area.h, 18)
+	r.text(dc, "ПОГОДА", area.x+22, area.y+34, 0, fontBold, 20, theme.muted)
+	pressure, wind, valid := weatherCardValues(weather)
+	if valid {
+		drawWeatherIcon(dc, area.x+area.w-38, area.y+35, 36, weather.Code)
 	}
 
-	cardY := y + headerH
-	availableH := area.y + area.h - cardY
-	cardH := (availableH - cardGap) / 2
-	r.usageGauge(dc, x, cardY, w, cardH, "5 ЧАСОВ", usage.Primary, now)
-	cardY += cardH + cardGap
-	r.usageGauge(dc, x, cardY, w, cardH, "НЕДЕЛЯ", usage.Secondary, now)
+	dc.SetHexColor(theme.strokeSoft)
+	dc.SetLineWidth(1.5)
+	dc.DrawLine(area.x+22, area.y+66, area.x+area.w-22, area.y+66)
+	dc.DrawLine(area.x+22, area.y+area.h*0.58, area.x+area.w-22, area.y+area.h*0.58)
+	dc.Stroke()
+
+	r.text(dc, "ДАВЛЕНИЕ", area.x+22, area.y+98, 0, fontBold, 17, theme.faint)
+	pressureSize := r.fitSize(dc, pressure, fontBold, 38, 26, area.w-44)
+	r.text(dc, pressure, area.x+22, area.y+143, 0, fontBold, pressureSize, theme.accent2)
+
+	windY := area.y + area.h*0.58
+	r.text(dc, "ВЕТЕР", area.x+22, windY+34, 0, fontBold, 17, theme.faint)
+	windSize := r.fitSize(dc, wind, fontBold, 38, 26, area.w-44)
+	r.text(dc, wind, area.x+22, windY+80, 0, fontBold, windSize, theme.accent)
+}
+
+func weatherCardValues(weather model.WeatherNow) (string, string, bool) {
+	if weather.PressureHPa <= 0 {
+		return "—", "—", false
+	}
+	return formatPressure(weather.PressureHPa), formatWind(weather.WindKmh), true
+}
+
+func formatPressure(hPa float64) string {
+	if hPa <= 0 {
+		return "—"
+	}
+	const hPaToMmHg = 0.750061683
+	return strconv.Itoa(int(math.Round(hPa*hPaToMmHg))) + " мм рт. ст."
 }
 
 // usageGauge draws one compact rate-limit card: title, percentage, progress bar,

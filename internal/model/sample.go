@@ -11,7 +11,14 @@ func SampleSnapshot(now time.Time) Snapshot {
 		Generated: now,
 		Weather: Weather{
 			City: "Гамбург",
-			Now:  WeatherNow{TempC: 18.1, FeelsC: 16.4, Code: 80, Humidity: 64, WindKmh: 13.9},
+			Now: WeatherNow{
+				TempC:       18.1,
+				FeelsC:      16.4,
+				Code:        80,
+				Humidity:    64,
+				PressureHPa: 1013.25,
+				WindKmh:     13.9,
+			},
 			Hours: []WeatherHour{
 				{Time: now.Add(1 * time.Hour), TempC: 18.4, Code: 3},
 				{Time: now.Add(2 * time.Hour), TempC: 19.0, Code: 2},
@@ -71,12 +78,6 @@ func SampleSnapshot(now time.Time) Snapshot {
 		},
 		Codex: ProviderUsage{
 			Updated: now,
-			Primary: UsageWindow{
-				Utilization: 0.24,
-				Duration:    5 * time.Hour,
-				ResetAt:     now.Add(3*time.Hour + 8*time.Minute),
-				Valid:       true,
-			},
 			Secondary: UsageWindow{
 				Utilization: 0.08,
 				Duration:    7 * 24 * time.Hour,

@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -119,6 +120,13 @@ func usageColor(frac float64) string {
 	default:
 		return theme.up
 	}
+}
+
+func formatWind(kmh float64) string {
+	if kmh < 0 {
+		return "—"
+	}
+	return strconv.Itoa(int(math.Round(kmh))) + " км/ч"
 }
 
 // humanizeUntil renders a short Russian "resets in …" string for a future

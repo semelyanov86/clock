@@ -98,11 +98,12 @@ func DescribeWMO(code int) (WeatherCategory, string) {
 
 // WeatherNow is the current observation.
 type WeatherNow struct {
-	TempC    float64
-	FeelsC   float64
-	Code     int
-	Humidity int
-	WindKmh  float64
+	TempC       float64
+	FeelsC      float64
+	Code        int
+	Humidity    int
+	PressureHPa float64
+	WindKmh     float64
 }
 
 // WeatherHour is a single hourly forecast point.

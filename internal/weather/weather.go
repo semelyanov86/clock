@@ -61,6 +61,7 @@ type response struct {
 		Temp     float64 `json:"temperature_2m"`
 		Feels    float64 `json:"apparent_temperature"`
 		Humidity int     `json:"relative_humidity_2m"`
+		Pressure float64 `json:"pressure_msl"`
 		Wind     float64 `json:"wind_speed_10m"`
 		Code     int     `json:"weather_code"`
 	} `json:"current"`
@@ -82,7 +83,11 @@ func (c *Client) Fetch(ctx context.Context) (model.Weather, error) {
 	q := url.Values{}
 	q.Set("latitude", strconv.FormatFloat(c.lat, 'f', 4, 64))
 	q.Set("longitude", strconv.FormatFloat(c.lon, 'f', 4, 64))
-	q.Set("current", "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m")
+	q.Set(
+		"current",
+		"temperature_2m,relative_humidity_2m,apparent_temperature,"+
+			"pressure_msl,weather_code,wind_speed_10m",
+	)
 	q.Set("hourly", "temperature_2m,weather_code")
 	q.Set("daily", "weather_code,temperature_2m_max,temperature_2m_min")
 	q.Set("timezone", c.tz)
@@ -123,11 +128,12 @@ func (c *Client) toModel(r response) model.Weather {
 	w := model.Weather{
 		City: c.city,
 		Now: model.WeatherNow{
-			TempC:    r.Current.Temp,
-			FeelsC:   r.Current.Feels,
-			Code:     r.Current.Code,
-			Humidity: r.Current.Humidity,
-			WindKmh:  r.Current.Wind,
+			TempC:       r.Current.Temp,
+			FeelsC:      r.Current.Feels,
+			Code:        r.Current.Code,
+			Humidity:    r.Current.Humidity,
+			PressureHPa: r.Current.Pressure,
+			WindKmh:     r.Current.Wind,
 		},
 	}
 

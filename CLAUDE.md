@@ -491,8 +491,9 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 
 ### Виджет «Лимиты AI» — Claude + Codex (opt-in, 2026-06-07 / 2026-07-12)
 
-Опциональная 4-я страница ротации: две колонки **Claude / Codex**, в каждой — **5-часовой
-блок** и **недельное окно**. Пакет `internal/claudeusage` читает OAuth-токен
+Опциональная 4-я страница ротации: две колонки **Claude / Codex**. Claude показывает
+**5-часовой блок** и **недельное окно**; Codex — текущие давление/ветер и недельное окно.
+Пакет `internal/claudeusage` читает OAuth-токен
 Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`-запрос (`max_tokens:1`,
 системный промпт Claude Code, `anthropic-beta: oauth-2025-04-20`) на `api.anthropic.com`, забирая
 заголовки `anthropic-ratelimit-unified-5h/7d-utilization` + `-reset`. **Подтверждено вживую**
@@ -528,6 +529,8 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
   `HOME`, `CODEX_HOME` и writable `/home/sergey/.codex`, чтобы официальный CLI управлял auth/cache.
 - **Codex E2E:** основной bucket подтверждён через новый Go-клиент локально 2026-07-12;
   официальный app-server отдельно проверен на `sergeyem.ru` (Codex CLI 0.144.1).
+- **Погода на странице AI:** `pressure_msl` из Open-Meteo хранится в hPa, а на экране
+  переводится в мм рт. ст.; ветер переиспользует `Weather.Now.WindKmh`.
 - Превью: `./bin/clock --once --fake --frame 3 --out preview_ai_limits.jpg`.
 
 ## Статус
@@ -549,7 +552,8 @@ Claude Code из `~/.claude/.credentials.json` и шлёт микро-`messages`
       €11 760 + позиции, рынки, погода, новости, цитата, лимиты Claude — всё корректно.
 - [ ] **E2E устройства:** первый `task push` → запомнить `ClockId` в `DIVOOM_CLOCK_ID`;
       выставить на приборе Берлин+24ч. (изображения в часы пока НЕ отправлялись.)
-- [x] Виджет «Лимиты AI» (opt-in): Claude + основной Codex bucket, общий экран 2×2,
+- [x] Виджет «Лимиты AI» (opt-in): Claude + основной Codex bucket, общий экран 2×2
+      (Claude 5ч/неделя, Codex погода/неделя),
       независимые partial/stale состояния и live-проверенные источники (см. подраздел выше).
 - [x] Деплой на Contabo: WireGuard-туннель до `192.168.178.40`, site-юзер `sergey`, systemd-юнит
       `clock.service`, авто-деплой через GitHub Actions. Рефреш OAuth-токена Claude решён в коде

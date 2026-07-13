@@ -4,12 +4,21 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 const sampleResponse = `{
-  "current": {"time":"2026-06-07T13:00","temperature_2m":18.1,"apparent_temperature":16.4,"relative_humidity_2m":64,"wind_speed_10m":13.9,"weather_code":80},
+  "current": {
+    "time":"2026-06-07T13:00",
+    "temperature_2m":18.1,
+    "apparent_temperature":16.4,
+    "relative_humidity_2m":64,
+    "pressure_msl":1013.2,
+    "wind_speed_10m":13.9,
+    "weather_code":80
+  },
   "hourly": {
     "time":["2026-06-07T11:00","2026-06-07T12:00","2026-06-07T13:00","2026-06-07T14:00","2026-06-07T15:00","2026-06-07T16:00"],
     "temperature_2m":[11,12,13,14,15,16],
@@ -26,7 +35,11 @@ const sampleResponse = `{
 func TestFetch(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := r.URL.Query().Get("current")
+		if !strings.Contains(","+current+",", ",pressure_msl,") {
+			t.Errorf("current query = %q, want pressure_msl", current)
+		}
 		_, _ = w.Write([]byte(sampleResponse))
 	}))
 	defer srv.Close()
@@ -45,6 +58,9 @@ func TestFetch(t *testing.T) {
 	}
 	if w.Now.TempC != 18.1 || w.Now.Humidity != 64 || w.Now.Code != 80 {
 		t.Errorf("now = %+v", w.Now)
+	}
+	if w.Now.PressureHPa != 1013.2 || w.Now.WindKmh != 13.9 {
+		t.Errorf("weather details = %+v", w.Now)
 	}
 	if len(w.Hours) != 3 {
 		t.Fatalf("hours = %d, want 3", len(w.Hours))
