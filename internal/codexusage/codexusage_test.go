@@ -158,11 +158,12 @@ func TestExchangeRejectsWindowWithoutUsedPercent(t *testing.T) {
 	}
 }
 
+// Process-backed tests intentionally run serially: concurrently creating and
+// executing fresh scripts can return ETXTBSY on overlay filesystems used by CI.
 func TestFetchWithFakeProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake executable uses /bin/sh")
 	}
-	t.Parallel()
 
 	binary := writeFakeCodex(t, `
 read -r initialize
@@ -191,7 +192,6 @@ func TestFetchReportsNonZeroExitAndStderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake executable uses /bin/sh")
 	}
-	t.Parallel()
 
 	binary := writeFakeCodex(t, `
 read -r initialize
@@ -213,7 +213,6 @@ func TestFetchCancellationStopsProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake executable uses /bin/sh")
 	}
-	t.Parallel()
 
 	binary := writeFakeCodex(t, `
 while :; do
@@ -237,7 +236,6 @@ func TestFetchCapsStderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake executable uses /bin/sh")
 	}
-	t.Parallel()
 
 	binary := writeFakeCodex(t, `
 i=0
