@@ -23,8 +23,16 @@ import (
 // page is appended at render time when either provider has data.
 const numPages = 3
 
-// maxJPEGBytes is the device limit for a dial background.
+// maxJPEGBytes is the device's hard limit for a dial background.
 const maxJPEGBytes = 500 * 1024
+
+// targetJPEGBytes is a soft reliability budget below the hard limit. The Times
+// Frame accepts small background uploads far more reliably than large ones:
+// live per-page failure rates rose sharply with image size (heavier portfolio
+// and markets pages near ~150 KB were rejected ~50% of the time, while ~128 KB
+// pages never failed). Encoding down to this budget keeps every page in the
+// reliable range; the quality drop is imperceptible on the flat dashboard UI.
+const targetJPEGBytes = 110 * 1024
 
 // rect is a drawing area in canvas coordinates.
 type rect struct {
@@ -131,17 +139,28 @@ func (r *Renderer) drawFooter(dc *gg.Context, snap model.Snapshot, page, pageCou
 	}
 }
 
+// encodeJPEG encodes the frame at the highest quality that fits the soft
+// reliability budget (targetJPEGBytes). If no quality step reaches the budget
+// it falls back to the smallest encoding that still fits the hard device limit,
+// erroring only when even the lowest quality overflows that.
 func encodeJPEG(dc *gg.Context) ([]byte, error) {
 	img := dc.Image()
 	var buf bytes.Buffer
+	var underMax []byte // smallest encoding seen that fits the hard limit
 	for _, q := range []int{92, 88, 82, 75, 68, 60} {
 		buf.Reset()
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
 			return nil, fmt.Errorf("encode jpeg: %w", err)
 		}
-		if buf.Len() <= maxJPEGBytes {
+		if buf.Len() <= targetJPEGBytes {
 			return bytes.Clone(buf.Bytes()), nil
 		}
+		if buf.Len() <= maxJPEGBytes {
+			underMax = bytes.Clone(buf.Bytes())
+		}
+	}
+	if underMax != nil {
+		return underMax, nil
 	}
 	return nil, fmt.Errorf("rendered frame exceeds %d bytes even at low quality (%d)", maxJPEGBytes, buf.Len())
 }
