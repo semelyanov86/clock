@@ -40,10 +40,16 @@ type fakeDevice struct {
 	lastClockID               int
 	brightness                []int
 	setCalls                  int
-	failSetTimes              int // return an error on the first N SetBrightness calls
+	failSetTimes              int    // return an error on the first N SetBrightness calls
+	failPatchTimes            int    // return an error on the first N PatchDialBg calls
+	onoffs                    []bool // sequence of OnOffScreen calls (true=on)
 }
 
 func (f *fakeDevice) Ping(context.Context) error { return nil }
+func (f *fakeDevice) OnOffScreen(_ context.Context, on bool) error {
+	f.onoffs = append(f.onoffs, on)
+	return nil
+}
 func (f *fakeDevice) SetBrightness(_ context.Context, level int) error {
 	f.setCalls++
 	if f.setCalls <= f.failSetTimes {
@@ -65,6 +71,9 @@ func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any,
 func (f *fakeDevice) PatchDialBg(_ context.Context, clockID int, _ []byte) error {
 	f.patches++
 	f.lastClockID = clockID
+	if f.patches <= f.failPatchTimes {
+		return errors.New("simulated upload failure")
+	}
 	return nil
 }
 func (f *fakeDevice) SetClockSelect(_ context.Context, clockID int) error {
@@ -185,14 +194,67 @@ func TestPushFrameCreatesThenPatches(t *testing.T) {
 	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
 
 	// First push with no pinned clock: create + select.
-	a.pushFrame(context.Background(), 0)
+	_ = a.pushFrame(context.Background(), 0)
 	if dev.creates != 1 || a.clockID != 555 || dev.selects != 1 {
 		t.Fatalf("after first push: creates=%d clockID=%d selects=%d", dev.creates, a.clockID, dev.selects)
 	}
 	// Subsequent push: patch the backdrop, then re-select to force a redraw.
-	a.pushFrame(context.Background(), 1)
+	_ = a.pushFrame(context.Background(), 1)
 	if dev.patches != 1 || dev.lastClockID != 555 || dev.selects != 2 {
 		t.Fatalf("after second push: patches=%d lastClockID=%d selects=%d", dev.patches, dev.lastClockID, dev.selects)
+	}
+}
+
+func TestFrameRecoveryPowerCyclesDisplay(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24}}
+	dev := &fakeDevice{failPatchTimes: 1_000_000} // every background push fails
+	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
+	a.clockID = 555 // pinned dial: skip the create path
+	a.recoverAfter = 3
+	a.recoverPause = time.Millisecond
+
+	fails := 0
+	for i := 0; i < 3; i++ {
+		fails = a.pushAndMaybeRecover(context.Background(), i, fails)
+	}
+	if len(dev.onoffs) != 2 || dev.onoffs[0] != false || dev.onoffs[1] != true {
+		t.Fatalf("after %d failures, onoffs = %v, want one off→on cycle", a.recoverAfter, dev.onoffs)
+	}
+	if fails != 0 {
+		t.Fatalf("fail counter after recovery = %d, want 0", fails)
+	}
+
+	// Recovery must not fire again until another full run of failures.
+	fails = a.pushAndMaybeRecover(context.Background(), 0, fails)
+	fails = a.pushAndMaybeRecover(context.Background(), 1, fails)
+	if len(dev.onoffs) != 2 {
+		t.Fatalf("recovery fired before threshold: onoffs = %v", dev.onoffs)
+	}
+	a.pushAndMaybeRecover(context.Background(), 2, fails)
+	if len(dev.onoffs) != 4 {
+		t.Fatalf("recovery did not fire on next threshold: onoffs = %v", dev.onoffs)
+	}
+}
+
+func TestFrameRecoveryResetsOnSuccess(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24}}
+	dev := &fakeDevice{failPatchTimes: 2} // fail twice, then push succeeds
+	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
+	a.clockID = 555
+	a.recoverAfter = 3
+	a.recoverPause = time.Millisecond
+
+	fails := 0
+	for i := 0; i < 3; i++ { // fail, fail, succeed
+		fails = a.pushAndMaybeRecover(context.Background(), i, fails)
+	}
+	if fails != 0 {
+		t.Fatalf("fail counter after a success = %d, want 0", fails)
+	}
+	if len(dev.onoffs) != 0 {
+		t.Fatalf("recovery fired despite a recovering device: onoffs = %v", dev.onoffs)
 	}
 }
 

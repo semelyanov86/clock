@@ -89,6 +89,19 @@ func (c *Client) SetBrightness(ctx context.Context, level int) error {
 	return err
 }
 
+// OnOffScreen turns the display on (true) or off (false) via
+// Channel/OnOffScreen. A quick off→on cycle clears the device's wedged
+// image-upload path after a run of failed background pushes (the same fix as
+// power-cycling the screen by hand).
+func (c *Client) OnOffScreen(ctx context.Context, on bool) error {
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := c.command(ctx, "Channel/OnOffScreen", map[string]any{"OnOff": v})
+	return err
+}
+
 // GetBrightness reads the current display brightness (0–100).
 func (c *Client) GetBrightness(ctx context.Context) (int, error) {
 	r, err := c.command(ctx, "Sys/GetBrightness", nil)

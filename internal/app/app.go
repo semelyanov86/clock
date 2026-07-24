@@ -63,6 +63,7 @@ type Device interface {
 	SetClockSelect(ctx context.Context, clockID int) error
 	SetBrightness(ctx context.Context, level int) error
 	GetBrightness(ctx context.Context) (int, error)
+	OnOffScreen(ctx context.Context, on bool) error
 }
 
 // Deps are the wired dependencies. Source fields may be nil when their
@@ -93,6 +94,15 @@ type App struct {
 	retryInitial  time.Duration
 	retryMax      time.Duration
 	retryDeadline time.Duration
+
+	// Display-recovery policy. After running a background push every frame for
+	// hours, the Times Frame starts rejecting uploads ("dial image upload
+	// failed" / timeouts) until the screen is power-cycled. recoverAfter is the
+	// number of consecutive failed pushes that triggers an automatic off→on
+	// cycle; recoverPause is the settle time between off and on. Overridable in
+	// tests.
+	recoverAfter int
+	recoverPause time.Duration
 }
 
 // New constructs the application.
@@ -106,6 +116,8 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 		retryInitial:  30 * time.Second,
 		retryMax:      2 * time.Minute,
 		retryDeadline: 10 * time.Minute,
+		recoverAfter:  3,
+		recoverPause:  3 * time.Second,
 	}
 }
 
@@ -138,7 +150,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	frame := 0
-	a.pushFrame(ctx, frame)
+	fails := a.pushAndMaybeRecover(ctx, frame, 0)
 	for {
 		select {
 		case <-ctx.Done():
@@ -146,19 +158,70 @@ func (a *App) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			frame++
-			a.pushFrame(ctx, frame)
+			fails = a.pushAndMaybeRecover(ctx, frame, fails)
 		}
 	}
 }
 
+// pushAndMaybeRecover pushes one frame and tracks consecutive failures across
+// calls via failCount. Once a run of failures reaches recoverAfter, it power-
+// cycles the display to clear the device's wedged upload path and resets the
+// count. Returns the updated consecutive-failure count (0 after a success or a
+// recovery).
+func (a *App) pushAndMaybeRecover(ctx context.Context, frame, failCount int) int {
+	if err := a.pushFrame(ctx, frame); err == nil {
+		return 0
+	}
+	failCount++
+	if a.recoverAfter > 0 && failCount >= a.recoverAfter {
+		a.recoverDisplay(ctx)
+		return 0
+	}
+	return failCount
+}
+
+// recoverDisplay power-cycles the screen (off→on) to clear the device's wedged
+// image-upload path after repeated failed pushes — the automated equivalent of
+// toggling the screen by hand. Best-effort: errors are logged and the frame
+// loop carries on; the next tick retries the push.
+func (a *App) recoverDisplay(ctx context.Context) {
+	a.log.Warn("background push failing repeatedly; power-cycling display to recover",
+		"consecutiveFailures", a.recoverAfter)
+
+	offCtx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+	err := a.deps.Device.OnOffScreen(offCtx, false)
+	cancel()
+	if err != nil {
+		a.log.Warn("recovery: screen off", "err", err)
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(a.recoverPause):
+	}
+
+	onCtx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+	err = a.deps.Device.OnOffScreen(onCtx, true)
+	cancel()
+	if err != nil {
+		a.log.Warn("recovery: screen on", "err", err)
+		return
+	}
+	a.log.Info("recovery: display power-cycled")
+}
+
 // pushFrame renders the current snapshot and pushes it to the device, creating
-// the dial on the first successful push when no ClockId is configured.
-func (a *App) pushFrame(ctx context.Context, frame int) {
+// the dial on the first successful push when no ClockId is configured. It
+// returns a non-nil error when the frame did not reach the display, so the
+// caller can track consecutive failures and trigger display recovery.
+func (a *App) pushFrame(ctx context.Context, frame int) error {
 	snap := a.store.snapshot(time.Now())
 	jpeg, err := a.deps.Renderer.Render(snap, frame)
 	if err != nil {
 		a.log.Error("render frame", "frame", frame, "err", err)
-		return
+		return err
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
@@ -168,14 +231,15 @@ func (a *App) pushFrame(ctx context.Context, frame int) {
 		id, err := a.deps.Device.CreateLocalClock(pctx, "Clock Dashboard", a.clockItems(), []string{"time_main"}, jpeg)
 		if err != nil {
 			a.log.Error("create local clock", "err", err)
-			return
+			return err
 		}
 		a.clockID = id
 		a.log.Info("created local clock", "clockId", id, "hint", "pin it via DIVOOM_CLOCK_ID to reuse across restarts")
 		if err := a.deps.Device.SetClockSelect(pctx, id); err != nil {
 			a.log.Warn("select clock", "clockId", id, "err", err)
+			return err
 		}
-		return
+		return nil
 	}
 
 	// Patch the stored backdrop, then re-select the dial so the device redraws
@@ -183,11 +247,13 @@ func (a *App) pushFrame(ctx context.Context, frame int) {
 	// live, so the displayed page would never change without this.
 	if err := a.deps.Device.PatchDialBg(pctx, a.clockID, jpeg); err != nil {
 		a.log.Warn("patch background", "clockId", a.clockID, "frame", frame, "err", err)
-		return
+		return err
 	}
 	if err := a.deps.Device.SetClockSelect(pctx, a.clockID); err != nil {
 		a.log.Warn("refresh dial", "clockId", a.clockID, "frame", frame, "err", err)
+		return err
 	}
+	return nil
 }
 
 func (a *App) clockItems() []map[string]any { return ClockItems(a.cfg.Device.ClockFont) }
