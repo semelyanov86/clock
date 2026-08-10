@@ -5,8 +5,13 @@ import (
 )
 
 func TestLoadValidDefaults(t *testing.T) {
-	// A minimal valid environment.
+	// A minimal valid environment. The credential variables are cleared
+	// explicitly: `task` loads .env into the test process, so a developer with real
+	// secrets on disk would otherwise see this fail.
 	t.Setenv("DIVOOM_DEVICE_HOST", "192.168.178.40")
+	for _, key := range []string{"FREEDOM_LOGIN", "FREEDOM_PASSWORD", "FAVQS_API_TOKEN"} {
+		t.Setenv(key, "")
+	}
 
 	c, err := Load()
 	if err != nil {
@@ -48,6 +53,15 @@ func TestLoadInvalidValuesAreErrors(t *testing.T) {
 		{"bad brightness hour", "BRIGHTNESS_SCHEDULE", "25:00=1"},
 		{"bad Codex enabled", "CODEX_USAGE_ENABLED", "maybe"},
 		{"non-positive Codex interval", "CODEX_USAGE_INTERVAL", "0s"},
+		{"bad ambient entry", "AMBIENT_SCHEDULE", "07:00"},
+		{"bad ambient state", "AMBIENT_SCHEDULE", "07:00=maybe"},
+		{"bad ambient minute", "AMBIENT_SCHEDULE", "07:99=on"},
+		{"bad ambient brightness", "AMBIENT_BRIGHTNESS", "150"},
+		{"zero ambient brightness", "AMBIENT_BRIGHTNESS", "0"},
+		{"bad ambient effect", "AMBIENT_EFFECTS", "1,9"},
+		{"non-numeric ambient effect", "AMBIENT_EFFECTS", "solid"},
+		{"bad ambient colour", "AMBIENT_COLORS", "#FFFFFF,red"},
+		{"bad ambient cycle chance", "AMBIENT_COLOR_CYCLE_CHANCE", "120"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,6 +104,68 @@ func TestLoadDefaultBrightnessSchedule(t *testing.T) {
 		if c.BrightnessSchedule[i] != p {
 			t.Errorf("point %d = %+v, want %+v", i, c.BrightnessSchedule[i], p)
 		}
+	}
+}
+
+func TestLoadDefaultAmbientSchedule(t *testing.T) {
+	t.Setenv("DIVOOM_DEVICE_HOST", "192.168.178.40")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []AmbientPoint{{7, 0, true}, {22, 30, false}}
+	if len(c.Ambient.Schedule) != len(want) {
+		t.Fatalf("Ambient.Schedule = %+v, want %+v", c.Ambient.Schedule, want)
+	}
+	for i, p := range want {
+		if c.Ambient.Schedule[i] != p {
+			t.Errorf("point %d = %+v, want %+v", i, c.Ambient.Schedule[i], p)
+		}
+	}
+	if c.Ambient.Brightness != 100 || c.Ambient.CycleChance != 30 {
+		t.Errorf("brightness = %d, cycleChance = %d, want 100 / 30", c.Ambient.Brightness, c.Ambient.CycleChance)
+	}
+	// Effect 0 lights only the bottom of the strip and 7 duplicates 1: neither
+	// belongs in the pool a random day is drawn from.
+	for _, e := range c.Ambient.Effects {
+		if e == 0 || e > 6 {
+			t.Errorf("default effect pool contains %d: %v", e, c.Ambient.Effects)
+		}
+	}
+	if len(c.Ambient.Effects) < 2 || len(c.Ambient.Colors) < 2 {
+		t.Errorf("default pools too small: effects=%v colors=%v", c.Ambient.Effects, c.Ambient.Colors)
+	}
+}
+
+func TestParseAmbientSchedule(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want []AmbientPoint
+	}{
+		{"empty disables", "", nil},
+		{"on and off", "07:00=on,22:30=off", []AmbientPoint{{7, 0, true}, {22, 30, false}}},
+		{"spaces tolerated", " 07:00 = on , 22:30 = off ", []AmbientPoint{{7, 0, true}, {22, 30, false}}},
+		{"booleans accepted", "06:15=true,23:45=0", []AmbientPoint{{6, 15, true}, {23, 45, false}}},
+		{"case insensitive", "07:00=ON", []AmbientPoint{{7, 0, true}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseAmbientSchedule(tt.raw)
+			if err != nil {
+				t.Fatalf("parseAmbientSchedule(%q): %v", tt.raw, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("point %d = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 

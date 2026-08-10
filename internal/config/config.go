@@ -28,6 +28,7 @@ type Config struct {
 	// CLOCK_TZ). Empty disables the scheduler. The user drops brightness to 0 at
 	// night manually; these points ramp it back up in the morning.
 	BrightnessSchedule []BrightnessPoint
+	Ambient            Ambient
 	ClockTZ            string
 	LogLevel           string
 }
@@ -38,6 +39,33 @@ type BrightnessPoint struct {
 	Hour  int
 	Min   int
 	Level int
+}
+
+// Ambient configures the side RGB light strip: when it is lit (Schedule, in
+// CLOCK_TZ) and the pool each day's look is drawn from. Every switch-on picks a
+// fresh random effect and colour, so no two days look the same.
+type Ambient struct {
+	// Schedule turns the strip on and off at fixed times of day. Empty disables
+	// the scheduler and leaves the strip untouched.
+	Schedule []AmbientPoint
+	// Brightness is the level the strip is lit at (1–100).
+	Brightness int
+	// Effects are the glow modes to draw from (device values 0–7). Effect 0 lights
+	// only the bottom of the strip, so the default pool leaves it out.
+	Effects []int
+	// Colors are the "#rrggbb" colours to draw from.
+	Colors []string
+	// CycleChance is the percent chance (0–100) that a day glows through the whole
+	// spectrum instead of a single colour.
+	CycleChance int
+}
+
+// AmbientPoint is one scheduled switch of the side light: at Hour:Min (in
+// CLOCK_TZ) the strip is lit with a fresh random look (On) or blanked.
+type AmbientPoint struct {
+	Hour int
+	Min  int
+	On   bool
 }
 
 // Device holds Divoom LAN connection settings.
@@ -152,6 +180,14 @@ func Load() (Config, error) {
 	if brightnessErr != nil {
 		errs = append(errs, brightnessErr)
 	}
+	ambientSchedule, ambientErr := parseAmbientSchedule(env("AMBIENT_SCHEDULE", defaultAmbientSchedule))
+	if ambientErr != nil {
+		errs = append(errs, ambientErr)
+	}
+	ambientEffects, effectsErr := parseIntList("AMBIENT_EFFECTS", env("AMBIENT_EFFECTS", defaultAmbientEffects))
+	if effectsErr != nil {
+		errs = append(errs, effectsErr)
+	}
 
 	c := Config{
 		Device: Device{
@@ -208,8 +244,15 @@ func Load() (Config, error) {
 			Codex:     getd("CODEX_USAGE_INTERVAL", 5*time.Minute),
 		},
 		BrightnessSchedule: brightness,
-		ClockTZ:            env("CLOCK_TZ", "Europe/Berlin"),
-		LogLevel:           env("LOG_LEVEL", "info"),
+		Ambient: Ambient{
+			Schedule:    ambientSchedule,
+			Brightness:  geti("AMBIENT_BRIGHTNESS", 100),
+			Effects:     ambientEffects,
+			Colors:      envList("AMBIENT_COLORS", defaultAmbientColors),
+			CycleChance: geti("AMBIENT_COLOR_CYCLE_CHANCE", 30),
+		},
+		ClockTZ:  env("CLOCK_TZ", "Europe/Berlin"),
+		LogLevel: env("LOG_LEVEL", "info"),
 	}
 
 	errs = append(errs, c.validate()...)
@@ -271,6 +314,22 @@ func (c Config) validate() []error {
 	}
 	if c.Codex.Enabled {
 		add(c.Codex.Bin != "", "CODEX_BIN must not be empty when CODEX_USAGE_ENABLED=true")
+	}
+	// The side-light pools are validated even with an empty schedule: they are also
+	// drawn from by `clock --ambient on`, and an out-of-range effect is stored by
+	// the firmware as 0 (bottom-only) instead of being rejected, so a typo would
+	// otherwise surface as a wrong-looking strip rather than an error.
+	add(c.Ambient.Brightness >= 1 && c.Ambient.Brightness <= 100,
+		fmt.Sprintf("AMBIENT_BRIGHTNESS out of range: %d (1-100)", c.Ambient.Brightness))
+	add(c.Ambient.CycleChance >= 0 && c.Ambient.CycleChance <= 100,
+		fmt.Sprintf("AMBIENT_COLOR_CYCLE_CHANCE out of range: %d (0-100)", c.Ambient.CycleChance))
+	add(len(c.Ambient.Effects) > 0, "AMBIENT_EFFECTS must list at least one effect")
+	for _, e := range c.Ambient.Effects {
+		add(e >= 0 && e <= maxAmbientEffect, fmt.Sprintf("AMBIENT_EFFECTS value out of range: %d (0-%d)", e, maxAmbientEffect))
+	}
+	add(len(c.Ambient.Colors) > 0, "AMBIENT_COLORS must list at least one colour")
+	for _, col := range c.Ambient.Colors {
+		add(isHexColor(col), fmt.Sprintf("AMBIENT_COLORS value %q must be #rrggbb", col))
 	}
 	return errs
 }
@@ -350,39 +409,115 @@ const defaultBrightnessSchedule = "04:00=1,05:00=9,06:00=25,07:00=40,08:00=50"
 // points. An empty string disables the scheduler; a present-but-malformed value
 // is an error (no silent fallback).
 func parseBrightnessSchedule(raw string) ([]BrightnessPoint, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
 	var points []BrightnessPoint
-	for _, entry := range strings.Split(raw, ",") {
+	err := eachScheduleEntry("BRIGHTNESS_SCHEDULE", raw, "HH:MM=LEVEL", func(entry string, hour, minute int, value string) error {
+		level, err := strconv.Atoi(value)
+		if err != nil || level < 0 || level > 100 {
+			return fmt.Errorf("invalid BRIGHTNESS_SCHEDULE level in %q: must be 0-100", entry)
+		}
+		points = append(points, BrightnessPoint{Hour: hour, Min: minute, Level: level})
+		return nil
+	})
+	return points, err
+}
+
+// defaultAmbientSchedule lights the side strip in the morning and blanks it for
+// the night (Berlin time). Override via AMBIENT_SCHEDULE; set it empty to leave
+// the strip alone.
+const defaultAmbientSchedule = "07:00=on,22:30=off"
+
+// defaultAmbientEffects is the pool of glow modes a day is drawn from. It omits
+// effect 0 (lights only the bottom of the strip) and 7 (a visual duplicate of 1).
+const defaultAmbientEffects = "1,2,3,4,5,6"
+
+// defaultAmbientColors mixes white with saturated hues so some days glow plain
+// white and others in colour.
+const defaultAmbientColors = "#FFFFFF,#FFD166,#FF8C42,#FF5C5C,#FF3CAC,#845EF7,#4C6EF5,#22D3EE,#2FD968"
+
+// maxAmbientEffect mirrors divoom.AmbientEffectMax: the highest glow mode the
+// firmware accepts. Anything above it is silently stored as 0.
+const maxAmbientEffect = 7
+
+// parseAmbientSchedule parses "HH:MM=on,HH:MM=off,…" into switch points. An
+// empty string disables the scheduler; a present-but-malformed value is an error.
+func parseAmbientSchedule(raw string) ([]AmbientPoint, error) {
+	var points []AmbientPoint
+	err := eachScheduleEntry("AMBIENT_SCHEDULE", raw, "HH:MM=on|off", func(entry string, hour, minute int, value string) error {
+		var on bool
+		switch strings.ToLower(value) {
+		case "on", "1", "true":
+			on = true
+		case "off", "0", "false":
+			on = false
+		default:
+			return fmt.Errorf("invalid AMBIENT_SCHEDULE state in %q: want on or off", entry)
+		}
+		points = append(points, AmbientPoint{Hour: hour, Min: minute, On: on})
+		return nil
+	})
+	return points, err
+}
+
+// eachScheduleEntry splits a "HH:MM=VALUE,…" schedule, parses the time of day,
+// and hands each entry's raw value to fn. want names the expected entry shape in
+// error messages, key the environment variable being parsed.
+func eachScheduleEntry(key, raw, want string, fn func(entry string, hour, minute int, value string) error) error {
+	for entry := range strings.SplitSeq(strings.TrimSpace(raw), ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
-		hm, lvl, ok := strings.Cut(entry, "=")
+		hm, value, ok := strings.Cut(entry, "=")
 		if !ok {
-			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE entry %q: want HH:MM=LEVEL", entry)
+			return fmt.Errorf("invalid %s entry %q: want %s", key, entry, want)
 		}
 		hh, mm, ok := strings.Cut(strings.TrimSpace(hm), ":")
 		if !ok {
-			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE time %q: want HH:MM", hm)
+			return fmt.Errorf("invalid %s time %q: want HH:MM", key, hm)
 		}
 		hour, err := strconv.Atoi(strings.TrimSpace(hh))
 		if err != nil || hour < 0 || hour > 23 {
-			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE hour in %q: must be 0-23", entry)
+			return fmt.Errorf("invalid %s hour in %q: must be 0-23", key, entry)
 		}
 		minute, err := strconv.Atoi(strings.TrimSpace(mm))
 		if err != nil || minute < 0 || minute > 59 {
-			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE minute in %q: must be 0-59", entry)
+			return fmt.Errorf("invalid %s minute in %q: must be 0-59", key, entry)
 		}
-		level, err := strconv.Atoi(strings.TrimSpace(lvl))
-		if err != nil || level < 0 || level > 100 {
-			return nil, fmt.Errorf("invalid BRIGHTNESS_SCHEDULE level in %q: must be 0-100", entry)
+		if err := fn(entry, hour, minute, strings.TrimSpace(value)); err != nil {
+			return err
 		}
-		points = append(points, BrightnessPoint{Hour: hour, Min: minute, Level: level})
 	}
-	return points, nil
+	return nil
+}
+
+// parseIntList parses a comma-separated list of integers, naming key in errors.
+func parseIntList(key, raw string) ([]int, error) {
+	var out []int
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s value %q: must be an integer", key, part)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// isHexColor reports whether s is a "#rrggbb" colour literal.
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 func envList(key, def string) []string {

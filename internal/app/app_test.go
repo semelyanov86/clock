@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/semelyanov86/clock/internal/config"
+	"github.com/semelyanov86/clock/internal/divoom"
 	"github.com/semelyanov86/clock/internal/model"
 )
 
@@ -43,6 +44,13 @@ type fakeDevice struct {
 	failSetTimes              int    // return an error on the first N SetBrightness calls
 	failPatchTimes            int    // return an error on the first N PatchDialBg calls
 	onoffs                    []bool // sequence of OnOffScreen calls (true=on)
+
+	ambient        []divoom.AmbientLight // sequence of accepted SetAmbientLight states
+	ambientState   divoom.AmbientLight   // what GetAmbientLight reports
+	ambientGets    int
+	ambientSets    int
+	failAmbientSet int  // return an error on the first N SetAmbientLight calls
+	failAmbientGet bool // GetAmbientLight always fails
 }
 
 func (f *fakeDevice) Ping(context.Context) error { return nil }
@@ -64,6 +72,24 @@ func (f *fakeDevice) GetBrightness(context.Context) (int, error) {
 	}
 	return f.brightness[len(f.brightness)-1], nil
 }
+func (f *fakeDevice) SetAmbientLight(_ context.Context, l divoom.AmbientLight) error {
+	f.ambientSets++
+	if f.ambientSets <= f.failAmbientSet {
+		return errors.New("simulated ambient failure")
+	}
+	f.ambient = append(f.ambient, l)
+	f.ambientState = l
+	return nil
+}
+
+func (f *fakeDevice) GetAmbientLight(context.Context) (divoom.AmbientLight, error) {
+	f.ambientGets++
+	if f.failAmbientGet {
+		return divoom.AmbientLight{}, errors.New("simulated read failure")
+	}
+	return f.ambientState, nil
+}
+
 func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any, []string, []byte) (int, error) {
 	f.creates++
 	return 555, nil

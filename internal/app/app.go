@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 
 	"github.com/semelyanov86/clock/internal/config"
+	"github.com/semelyanov86/clock/internal/divoom"
 	"github.com/semelyanov86/clock/internal/model"
 	"github.com/semelyanov86/clock/internal/render"
 )
@@ -64,6 +66,8 @@ type Device interface {
 	SetBrightness(ctx context.Context, level int) error
 	GetBrightness(ctx context.Context) (int, error)
 	OnOffScreen(ctx context.Context, on bool) error
+	SetAmbientLight(ctx context.Context, light divoom.AmbientLight) error
+	GetAmbientLight(ctx context.Context) (divoom.AmbientLight, error)
 }
 
 // Deps are the wired dependencies. Source fields may be nil when their
@@ -88,12 +92,19 @@ type App struct {
 	store   *store
 	clockID int
 
-	// Brightness set-retry policy. Overridable in tests; the night-time
-	// WireGuard tunnel can briefly drop, and a scheduled set is a single shot
-	// (unlike the frame loop, which retries every tick), so retry to ride it out.
+	// Scheduled-write retry policy (brightness, ambient light). Overridable in
+	// tests; the night-time WireGuard tunnel can briefly drop, and a scheduled
+	// write is a single shot (unlike the frame loop, which retries every tick), so
+	// retry to ride it out.
 	retryInitial  time.Duration
 	retryMax      time.Duration
 	retryDeadline time.Duration
+
+	// Side-light randomiser. rnd is only touched by the ambient scheduler
+	// goroutine; lastAmbientEffect is the effect used on the previous switch-on
+	// (-1 = none yet) so today's look differs from yesterday's.
+	rnd               *rand.Rand
+	lastAmbientEffect int
 
 	// Display-recovery policy. After running a background push every frame for
 	// hours, the Times Frame starts rejecting uploads ("dial image upload
@@ -108,18 +119,24 @@ type App struct {
 // New constructs the application.
 func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 	return &App{
-		cfg:           cfg,
-		log:           log,
-		deps:          deps,
-		store:         newStore(),
-		clockID:       cfg.Device.ClockID,
-		retryInitial:  30 * time.Second,
-		retryMax:      2 * time.Minute,
-		retryDeadline: 10 * time.Minute,
-		recoverAfter:  3,
-		recoverPause:  3 * time.Second,
+		cfg:               cfg,
+		log:               log,
+		deps:              deps,
+		store:             newStore(),
+		clockID:           cfg.Device.ClockID,
+		retryInitial:      30 * time.Second,
+		retryMax:          2 * time.Minute,
+		retryDeadline:     10 * time.Minute,
+		recoverAfter:      3,
+		recoverPause:      3 * time.Second,
+		rnd:               NewRand(),
+		lastAmbientEffect: -1,
 	}
 }
+
+// NewRand returns a seeded generator for the side-light randomiser. It is
+// exported so one-shot commands can draw the same kind of look as the scheduler.
+func NewRand() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }
 
 // Run populates the store, ensures the dial exists, then renders and pushes on
 // the frame interval until ctx is cancelled.
@@ -133,6 +150,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.startFetchers(ctx)
 	go a.runBrightnessSchedule(ctx)
+	go a.runAmbientSchedule(ctx)
 
 	// Bring the dashboard to the foreground. The create path selects a freshly
 	// created dial; a pre-pinned DIVOOM_CLOCK_ID is otherwise only background-
@@ -371,34 +389,45 @@ func (a *App) runBrightnessSchedule(ctx context.Context) {
 	}
 }
 
-// setBrightness applies one brightness level, retrying transient device/network
-// failures with backoff until retryDeadline (the tunnel can drop for a minute or
-// two overnight). On success it reads the value back to confirm it took effect.
+// setBrightness applies one brightness level and reads it back to confirm it
+// took effect.
 func (a *App) setBrightness(ctx context.Context, level int) {
+	ok := a.applyWithRetry(ctx, "scheduled brightness", func(c context.Context) error {
+		return a.deps.Device.SetBrightness(c, level)
+	}, "level", level)
+	if ok {
+		a.verifyBrightness(ctx, level)
+	}
+}
+
+// applyWithRetry performs one scheduled device write, retrying transient
+// device/network failures with backoff until retryDeadline (the tunnel can drop
+// for a minute or two overnight). what names the write and attrs are added to
+// every log line. It reports whether the write went through.
+func (a *App) applyWithRetry(ctx context.Context, what string, write func(context.Context) error, attrs ...any) bool {
 	deadline := time.Now().Add(a.retryDeadline)
 	backoff := a.retryInitial
 
 	for attempt := 1; ; attempt++ {
-		bctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
-		err := a.deps.Device.SetBrightness(bctx, level)
+		wctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
+		err := write(wctx)
 		cancel()
 		if err == nil {
-			a.log.Info("set scheduled brightness", "level", level, "attempt", attempt)
-			a.verifyBrightness(ctx, level)
-			return
+			a.log.Info("set "+what, append(attrs, "attempt", attempt)...)
+			return true
 		}
 
 		if time.Now().Add(backoff).After(deadline) {
-			a.log.Warn("set scheduled brightness: giving up", "level", level, "attempts", attempt, "err", err)
-			return
+			a.log.Warn("set "+what+": giving up", append(attrs, "attempts", attempt, "err", err)...)
+			return false
 		}
-		a.log.Warn("set scheduled brightness: will retry", "level", level, "attempt", attempt, "backoff", backoff.String(), "err", err)
+		a.log.Warn("set "+what+": will retry", append(attrs, "attempt", attempt, "backoff", backoff.String(), "err", err)...)
 
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return
+			return false
 		case <-timer.C:
 		}
 		if backoff < a.retryMax {
@@ -427,22 +456,34 @@ func (a *App) verifyBrightness(ctx context.Context, want int) {
 
 // nextBrightnessEvent returns how long to wait until the next scheduled point
 // and the level to set then. now must already be in the schedule's timezone;
-// schedule must be non-empty. Points earlier than now roll over to tomorrow.
+// schedule must be non-empty.
 func nextBrightnessEvent(now time.Time, schedule []config.BrightnessPoint) (time.Duration, int) {
+	wait, point := nextScheduledEvent(now, schedule, func(p config.BrightnessPoint) (int, int) {
+		return p.Hour, p.Min
+	})
+	return wait, point.Level
+}
+
+// nextScheduledEvent returns how long to wait until the earliest upcoming point
+// of a daily schedule and that point. timeOfDay reports a point's hour and
+// minute. now must already be in the schedule's timezone; points must be
+// non-empty. Points earlier than now roll over to tomorrow.
+func nextScheduledEvent[T any](now time.Time, points []T, timeOfDay func(T) (hour, min int)) (time.Duration, T) {
 	var (
-		best  time.Duration = -1
-		level int
+		best time.Duration = -1
+		next T
 	)
-	for _, p := range schedule {
-		t := time.Date(now.Year(), now.Month(), now.Day(), p.Hour, p.Min, 0, 0, now.Location())
+	for _, p := range points {
+		hour, minute := timeOfDay(p)
+		t := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
 		if !t.After(now) {
 			t = t.AddDate(0, 0, 1)
 		}
 		if d := t.Sub(now); best < 0 || d < best {
-			best, level = d, p.Level
+			best, next = d, p
 		}
 	}
-	return best, level
+	return best, next
 }
 
 func (a *App) doWeather(ctx context.Context) {

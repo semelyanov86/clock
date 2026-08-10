@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,116 @@ type apiResponse struct {
 	ReturnMessage string `json:"ReturnMessage"`
 	ClockID       int    `json:"ClockId"`
 	Brightness    int    `json:"Brightness"`
+}
+
+// Glow modes for AmbientLight.SelectEffect, verified visually on a Times Frame.
+// The firmware silently stores a value outside 0–7 as 0 (bottom-only), so
+// callers must keep SelectEffect in range rather than rely on an error.
+const (
+	AmbientEffectBottomOnly = 0 // only the lower part of the strip, static
+	AmbientEffectSolid      = 1 // whole strip, static
+	AmbientEffectWaveUp     = 2 // wave travelling bottom to top
+	AmbientEffectBreathe    = 3 // slow shimmer
+	AmbientEffectFlicker    = 4 // shimmer, noticeably busier than breathe
+	AmbientEffectRunnerDown = 5 // small runner moving top to bottom
+	AmbientEffectFadeInOut  = 6 // whole strip fading in and out
+	AmbientEffectStatic     = 7 // whole strip, no animation (looks like solid)
+
+	// AmbientEffectMax is the highest value the firmware accepts.
+	AmbientEffectMax = AmbientEffectStatic
+)
+
+// AmbientLight is the state of the vertical RGB strip on the side of the case.
+// Channel/GetAmbientLight and Channel/SetAmbientLight are undocumented but
+// present in the Times Frame firmware (found by probing) and are the only way to
+// control the strip — the Divoom app exposes no setting for it.
+//
+// A Set always writes every field: sending Channel/SetAmbientLight with fields
+// missing zeroes the whole structure on the device, which is why the payload is
+// assembled explicitly below.
+type AmbientLight struct {
+	Brightness   int    `json:"Brightness"`   // 0–100; 0 blanks the strip
+	Color        string `json:"Color"`        // "#rrggbb"; the base colour when ColorCycle is on
+	ColorCycle   int    `json:"ColorCycle"`   // 1 = drift through the spectrum
+	EqOnOff      int    `json:"EqOnOff"`      // 1 = react to sound
+	SelectEffect int    `json:"SelectEffect"` // glow mode, see AmbientEffect*
+}
+
+// SameAs reports whether two strip states are equivalent. It tolerates the case
+// of the colour, which the device echoes back lowercased.
+func (l AmbientLight) SameAs(o AmbientLight) bool {
+	return l.Brightness == o.Brightness &&
+		l.ColorCycle == o.ColorCycle &&
+		l.EqOnOff == o.EqOnOff &&
+		l.SelectEffect == o.SelectEffect &&
+		strings.EqualFold(l.Color, o.Color)
+}
+
+// On reports whether the strip is lit in this state.
+func (l AmbientLight) On() bool { return l.Brightness > 0 }
+
+func (l AmbientLight) validate() error {
+	if l.Brightness < 0 || l.Brightness > 100 {
+		return fmt.Errorf("ambient brightness %d out of range (0-100)", l.Brightness)
+	}
+	if l.SelectEffect < 0 || l.SelectEffect > AmbientEffectMax {
+		return fmt.Errorf("ambient effect %d out of range (0-%d)", l.SelectEffect, AmbientEffectMax)
+	}
+	if l.ColorCycle != 0 && l.ColorCycle != 1 {
+		return fmt.Errorf("ambient color cycle %d must be 0 or 1", l.ColorCycle)
+	}
+	if l.EqOnOff != 0 && l.EqOnOff != 1 {
+		return fmt.Errorf("ambient eq %d must be 0 or 1", l.EqOnOff)
+	}
+	if !validHexColor(l.Color) {
+		return fmt.Errorf("ambient color %q must be #rrggbb", l.Color)
+	}
+	return nil
+}
+
+// SetAmbientLight writes the full state of the side RGB strip.
+func (c *Client) SetAmbientLight(ctx context.Context, l AmbientLight) error {
+	if err := l.validate(); err != nil {
+		return err
+	}
+	_, err := c.command(ctx, "Channel/SetAmbientLight", map[string]any{
+		"Brightness":   l.Brightness,
+		"Color":        l.Color,
+		"ColorCycle":   l.ColorCycle,
+		"EqOnOff":      l.EqOnOff,
+		"SelectEffect": l.SelectEffect,
+	})
+	return err
+}
+
+// GetAmbientLight reads the current state of the side RGB strip. The state is
+// persisted by the device, so it survives reboots and reads back what was set.
+func (c *Client) GetAmbientLight(ctx context.Context) (AmbientLight, error) {
+	const command = "Channel/GetAmbientLight"
+	raw, err := c.postJSON(ctx, endpointAPI, map[string]any{"Command": command, "ReturnCode": 0})
+	if err != nil {
+		return AmbientLight{}, err
+	}
+	if _, err := parseResponse(command, raw); err != nil {
+		return AmbientLight{}, err
+	}
+	var l AmbientLight
+	if err := json.Unmarshal(raw, &l); err != nil {
+		return AmbientLight{}, fmt.Errorf("%s: decode response %q: %w", command, truncate(raw), err)
+	}
+	return l, nil
+}
+
+func validHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 // Ping issues a cheap read-only command to confirm the device is reachable.

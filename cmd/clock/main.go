@@ -9,6 +9,7 @@
 //	clock --once --out f.jpg    render one frame to a file and exit
 //	clock --once --fake         use built-in sample data (no network/credentials)
 //	clock --once --push         also push the rendered frame to the device
+//	clock --ambient on|off      switch the side RGB light now and exit
 package main
 
 import (
@@ -43,6 +44,7 @@ func main() {
 	frame := flag.Int("frame", 0, "frame index for --once (selects page / news / quote)")
 	push := flag.Bool("push", false, "with --once, also push the frame to the device")
 	refreshToken := flag.Bool("refresh-claude-token", false, "force-refresh the Claude OAuth token, then exit (setup/verification)")
+	ambient := flag.String("ambient", "", "switch the side RGB light now and exit: on (random look) or off")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -55,6 +57,14 @@ func main() {
 	if *refreshToken {
 		if err := refreshClaudeToken(context.Background(), cfg, log); err != nil {
 			log.Error("refresh claude token", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *ambient != "" {
+		if err := switchAmbient(context.Background(), cfg, log, *ambient); err != nil {
+			log.Error("switch ambient light", "state", *ambient, "err", err)
 			os.Exit(1)
 		}
 		return
@@ -164,6 +174,38 @@ func refreshClaudeToken(ctx context.Context, cfg config.Config, log *slog.Logger
 	}
 	log.Info("claude oauth token refreshed",
 		"oldExpiry", fmtExpiry(old), "newExpiry", fmtExpiry(fresh))
+	return nil
+}
+
+// switchAmbient applies one side-light state — a freshly drawn random look, or
+// blanked — and reports what the device stored. It powers
+// `clock --ambient on|off`, used to check the strip without waiting for a
+// scheduled point.
+func switchAmbient(ctx context.Context, cfg config.Config, log *slog.Logger, state string) error {
+	var want divoom.AmbientLight
+	switch strings.ToLower(state) {
+	case "on":
+		want = app.AmbientLook(cfg.Ambient, app.NewRand(), -1)
+	case "off":
+		want = app.AmbientOff()
+	default:
+		return fmt.Errorf("unknown state %q: want on or off", state)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, cfg.Device.Timeout)
+	defer cancel()
+
+	dev := divoom.New(cfg.Device.Host, cfg.Device.Port, cfg.Device.Timeout)
+	if err := dev.SetAmbientLight(ctx, want); err != nil {
+		return err
+	}
+	got, err := dev.GetAmbientLight(ctx)
+	if err != nil {
+		return fmt.Errorf("read back: %w", err)
+	}
+	log.Info("ambient light set", "on", got.On(), "brightness", got.Brightness,
+		"effect", got.SelectEffect, "color", got.Color, "cycle", got.ColorCycle,
+		"matchesRequest", got.SameAs(want))
 	return nil
 }
 
