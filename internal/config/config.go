@@ -246,7 +246,7 @@ func Load() (Config, error) {
 		BrightnessSchedule: brightness,
 		Ambient: Ambient{
 			Schedule:    ambientSchedule,
-			Brightness:  geti("AMBIENT_BRIGHTNESS", 100),
+			Brightness:  geti("AMBIENT_BRIGHTNESS", 70),
 			Effects:     ambientEffects,
 			Colors:      envList("AMBIENT_COLORS", defaultAmbientColors),
 			CycleChance: geti("AMBIENT_COLOR_CYCLE_CHANCE", 30),

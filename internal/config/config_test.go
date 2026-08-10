@@ -122,8 +122,8 @@ func TestLoadDefaultAmbientSchedule(t *testing.T) {
 			t.Errorf("point %d = %+v, want %+v", i, c.Ambient.Schedule[i], p)
 		}
 	}
-	if c.Ambient.Brightness != 100 || c.Ambient.CycleChance != 30 {
-		t.Errorf("brightness = %d, cycleChance = %d, want 100 / 30", c.Ambient.Brightness, c.Ambient.CycleChance)
+	if c.Ambient.Brightness != 70 || c.Ambient.CycleChance != 30 {
+		t.Errorf("brightness = %d, cycleChance = %d, want 70 / 30", c.Ambient.Brightness, c.Ambient.CycleChance)
 	}
 	// Effect 0 lights only the bottom of the strip and 7 duplicates 1: neither
 	// belongs in the pool a random day is drawn from.
