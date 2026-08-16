@@ -26,16 +26,24 @@ type Delta struct {
 }
 
 // Direction reports whether the delta is up, down, or flat. Percentage is
-// preferred; the absolute change is the fallback when the percentage is zero.
+// preferred; the absolute change is the fallback when no percentage is reported.
+//
+// A percentage that rounds to 0.00% on screen counts as flat: the dial prints
+// two decimals, so a −0.0007% tick would otherwise be drawn as a red fall that
+// the number itself does not show.
 func (d Delta) Direction() Direction {
-	v := d.Pct
-	if v == 0 {
-		v = d.Abs
-	}
+	const flatPct = 0.005
+
 	switch {
-	case v > 0:
+	case d.Pct >= flatPct:
 		return Up
-	case v < 0:
+	case d.Pct <= -flatPct:
+		return Down
+	case d.Pct != 0:
+		return Flat // reported, but too small to render
+	case d.Abs > 0:
+		return Up
+	case d.Abs < 0:
 		return Down
 	default:
 		return Flat

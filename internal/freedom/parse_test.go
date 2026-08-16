@@ -183,6 +183,28 @@ func TestParseQuote(t *testing.T) {
 			wantLast: 144.6, wantCurr: "$", wantName: "Vanguard S&P 500", wantAbs: 6.98, wantPct: 5.0719,
 		},
 		{
+			// FX pair, live shape on 2026-08-16: ClosePrice is a 2023 leftover
+			// (80.1 against a live 97.70) and chg is derived from it, so both are
+			// ignored in favour of the feed's own pcp.
+			name: "fx pair ignores stale ClosePrice", symbol: "EUR/RUR",
+			raw: `{"c":"EUR/RUR","name":"Euro - Russian ruble","ltp":97.697425,"ClosePrice":80.1,` +
+				`"chg":17.597425,"pcp":0.59,"base_currency":"EUR","x_curr":"RUR"}`,
+			wantOK:   true,
+			wantLast: 97.697425, wantCurr: "₽", wantName: "Euro - Russian ruble",
+			wantAbs: 0.5729, wantPct: 0.59,
+		},
+		{
+			// Session closed: the feed rolls ClosePrice to the last trade, which
+			// would flatten a real −1.13% day to 0.00%. pcp still carries the move,
+			// and chg agrees with it, so the reported absolute is kept.
+			name: "closed session keeps the day move", symbol: "BRNT.EU",
+			raw: `{"c":"BRNT.EU","name":"Brent","ltp":69.465,"ClosePrice":69.465,` +
+				`"chg":-0.8,"pcp":-1.13,"base_currency":"EUR","x_curr":"EUR"}`,
+			wantOK:   true,
+			wantLast: 69.465, wantCurr: "€", wantName: "Brent",
+			wantAbs: -0.8, wantPct: -1.13,
+		},
+		{
 			name: "no price is not ok", symbol: "EMPTY",
 			raw: `{"c":"EMPTY"}`, wantOK: false,
 		},

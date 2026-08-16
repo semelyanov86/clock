@@ -54,6 +54,11 @@ type Client struct {
 // maxResponseBytes caps a single API response to guard against runaway reads.
 const maxResponseBytes = 4 << 20
 
+// perQuoteTimeout bounds one getSecurityInfo call inside a Quotes batch. A quote
+// normally answers in well under a second; the cap keeps a stalled ticker from
+// spending the caller's whole budget on itself.
+const perQuoteTimeout = 6 * time.Second
+
 // userAgent is a browser-like User-Agent. The Tradernet gateway sits behind a
 // WAF (Cloudflare) that returns HTTP 403 to the default Go User-Agent, so every
 // request must present a realistic browser identity.
@@ -287,28 +292,53 @@ func (c *Client) News(ctx context.Context, n int) ([]model.NewsItem, error) {
 // E2E: confirm the command and the last-price / day-change field names
 // (ltp/chg/pcp/x_curr) against real symbols; adjust parseQuote.
 func (c *Client) Quotes(ctx context.Context, symbols []string) (map[string]model.Instrument, error) {
-	out := make(map[string]model.Instrument, len(symbols))
+	var (
+		out     = make(map[string]model.Instrument, len(symbols))
+		missing []string
+		lastErr error
+	)
 	for _, sym := range symbols {
 		sym = strings.TrimSpace(sym)
 		if sym == "" {
 			continue
 		}
 		if ctx.Err() != nil {
-			break
-		}
-		raw, err := c.withSession(ctx, func(ctx context.Context) (json.RawMessage, error) {
-			return c.call(ctx, "getSecurityInfo", map[string]any{"ticker": sym, "sup": false})
-		})
-		if err != nil {
-			c.log.Debug("quote fetch failed", "symbol", sym, "err", err)
+			missing = append(missing, sym)
+			lastErr = ctx.Err()
 			continue
 		}
-		if inst, ok := parseQuote(sym, raw); ok {
-			out[sym] = inst
+		// One symbol at a time, each on its own deadline: the gateway
+		// occasionally stalls on a single ticker, and without a per-symbol bound
+		// that one call eats the whole batch budget and the markets page comes
+		// back empty.
+		qctx, cancel := context.WithTimeout(ctx, perQuoteTimeout)
+		raw, err := c.withSession(qctx, func(ctx context.Context) (json.RawMessage, error) {
+			return c.call(ctx, "getSecurityInfo", map[string]any{"ticker": sym, "sup": false})
+		})
+		cancel()
+		if err != nil {
+			c.log.Debug("quote fetch failed", "symbol", sym, "err", err)
+			missing = append(missing, sym)
+			lastErr = err
+			continue
 		}
+		inst, ok := parseQuote(sym, raw)
+		if !ok {
+			c.log.Debug("quote not parseable", "symbol", sym)
+			missing = append(missing, sym)
+			continue
+		}
+		out[sym] = inst
 	}
+
 	if len(out) == 0 {
+		if lastErr != nil {
+			return nil, fmt.Errorf("no quotes resolved for %v: %w", symbols, lastErr)
+		}
 		return nil, fmt.Errorf("no quotes resolved for %v", symbols)
+	}
+	if len(missing) > 0 {
+		c.log.Info("partial quote batch", "resolved", len(out), "missing", missing, "lastErr", lastErr)
 	}
 	return out, nil
 }

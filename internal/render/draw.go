@@ -234,15 +234,21 @@ func formatMoney(v float64, currency string, decimals int) string {
 	}
 }
 
-// formatPct renders the day percentage with an explicit sign.
+// formatPct renders the day percentage with an explicit sign. A move too small
+// to survive the rounding is printed unsigned, so a −0.0007% tick reads as
+// "0.00%" instead of a fall the digits do not back up.
 func formatPct(d model.Delta) string {
-	sign := "+"
 	v := d.Pct
+	sign := "+"
 	if v < 0 {
 		sign = "−"
 		v = -v
 	}
-	return sign + strconv.FormatFloat(v, 'f', 2, 64) + "%"
+	num := strconv.FormatFloat(v, 'f', 2, 64)
+	if num == "0.00" {
+		return num + "%"
+	}
+	return sign + num + "%"
 }
 
 // formatSignedAbs renders an absolute change with an explicit sign and symbol.

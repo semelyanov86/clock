@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -355,9 +356,9 @@ func asArray(v json.RawMessage) []json.RawMessage {
 
 // secInfo maps the getSecurityInfo fields we need. Confirmed against live
 // responses (XEON.EU, VUAA.EU, EUR/RUR, …): the last trade price is `ltp`, the
-// previous close is `ClosePrice`, and the trading currency is `base_currency`.
-// There is no `pcp` (percent) field, and `chg` is inconsistent across
-// instrument types, so the daily change is computed from ltp vs ClosePrice.
+// trading currency is `base_currency`, and the day change is reported both as a
+// percentage (`pcp`) and an absolute (`chg`), with `ClosePrice` as the third
+// source. See parseQuote for how the three are ranked.
 type secInfo struct {
 	C            string    `json:"c"`
 	Name         string    `json:"name"`
@@ -396,16 +397,7 @@ func parseQuote(symbol string, raw json.RawMessage) (model.Instrument, bool) {
 		return model.Instrument{}, false
 	}
 
-	// Daily change from the previous close — consistent across ETFs and FX.
-	// Fall back to the API's own `chg`/`pcp` only when ClosePrice is absent.
-	var delta model.Delta
-	if prevClose := float64(s.ClosePrice); prevClose != 0 {
-		delta.Abs = last - prevClose
-		delta.Pct = delta.Abs / prevClose * 100
-	} else {
-		delta.Abs = float64(s.Chg)
-		delta.Pct = float64(s.Pcp)
-	}
+	delta := quoteDelta(last, float64(s.Pcp), float64(s.Chg), float64(s.ClosePrice))
 
 	return model.Instrument{
 		Symbol:   symbol,
@@ -414,6 +406,39 @@ func parseQuote(symbol string, raw json.RawMessage) (model.Instrument, bool) {
 		Currency: currencySymbol(firstNonEmpty(s.XCurr, s.Curr, s.BaseCurrency)),
 		Delta:    delta,
 	}, true
+}
+
+// quoteDelta picks the day change out of the three numbers getSecurityInfo
+// reports, in order of how much they can be trusted (verified against live
+// responses on 2026-08-16):
+//
+//   - `pcp`, the feed's own percentage, wins whenever it is reported.
+//   - `ClosePrice` is used only as a fallback, because it lies in two ways: on FX
+//     pairs it is years stale (EUR/RUR carried 80.1 against a live 97.70, which
+//     rendered as a fake ▲+22 %), and on exchange instruments it is rolled to the
+//     last trade once the session closes, which flattens the day to 0.00 %.
+//   - `chg`, the absolute change, is only taken when it agrees with `pcp` — on FX
+//     pairs it is derived from the same stale close (EUR/RUR reported +17.60).
+//     Otherwise the absolute change is implied from the percentage.
+func quoteDelta(last, pcp, chg, prevClose float64) model.Delta {
+	if pcp == 0 {
+		if prevClose != 0 {
+			abs := last - prevClose
+			return model.Delta{Abs: abs, Pct: abs / prevClose * 100}
+		}
+		return model.Delta{Abs: chg}
+	}
+
+	d := model.Delta{Pct: pcp}
+	if factor := 1 + pcp/100; factor != 0 {
+		d.Abs = last - last/factor
+	}
+	// Prefer the feed's own absolute change when the two agree (within a tenth of
+	// the implied move), so the reported precision is kept.
+	if chg != 0 && d.Abs != 0 && math.Abs(chg-d.Abs) <= 0.1*math.Abs(d.Abs) {
+		d.Abs = chg
+	}
+	return d
 }
 
 func parseFlexibleTime(vals ...json.RawMessage) time.Time {
