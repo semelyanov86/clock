@@ -147,8 +147,9 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 // exported so one-shot commands can draw the same kind of look as the scheduler.
 func NewRand() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }
 
-// Run populates the store, ensures the dial exists, then renders and pushes on
-// the frame interval until ctx is cancelled.
+// Run populates the store, then renders and pushes on the frame interval until
+// ctx is cancelled, alternating between the two dials (creating either one that
+// is not pinned yet).
 func (a *App) Run(ctx context.Context) error {
 	if err := a.deps.Device.Ping(ctx); err != nil {
 		a.log.Warn("device not reachable at startup; will keep retrying", "err", err)
