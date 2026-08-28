@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ func (fakeRenderer) Render(_ model.Snapshot, _ int) ([]byte, error) { return []b
 type fakeDevice struct {
 	creates, patches, selects int
 	lastClockID               int
+	patchIDs, selectIDs       []int // ids in call order, to assert the alternation
 	brightness                []int
 	setCalls                  int
 	failSetTimes              int    // return an error on the first N SetBrightness calls
@@ -92,11 +94,12 @@ func (f *fakeDevice) GetAmbientLight(context.Context) (divoom.AmbientLight, erro
 
 func (f *fakeDevice) CreateLocalClock(context.Context, string, []map[string]any, []string, []byte) (int, error) {
 	f.creates++
-	return 555, nil
+	return 554 + f.creates, nil // distinct id per dial: 555, 556, …
 }
 func (f *fakeDevice) PatchDialBg(_ context.Context, clockID int, _ []byte) error {
 	f.patches++
 	f.lastClockID = clockID
+	f.patchIDs = append(f.patchIDs, clockID)
 	if f.patches <= f.failPatchTimes {
 		return errors.New("simulated upload failure")
 	}
@@ -105,6 +108,7 @@ func (f *fakeDevice) PatchDialBg(_ context.Context, clockID int, _ []byte) error
 func (f *fakeDevice) SetClockSelect(_ context.Context, clockID int) error {
 	f.selects++
 	f.lastClockID = clockID
+	f.selectIDs = append(f.selectIDs, clockID)
 	return nil
 }
 
@@ -219,15 +223,63 @@ func TestPushFrameCreatesThenPatches(t *testing.T) {
 	dev := &fakeDevice{}
 	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
 
-	// First push with no pinned clock: create + select.
-	_ = a.pushFrame(context.Background(), 0)
-	if dev.creates != 1 || a.clockID != 555 || dev.selects != 1 {
-		t.Fatalf("after first push: creates=%d clockID=%d selects=%d", dev.creates, a.clockID, dev.selects)
+	// With no pinned clocks the first two frames create one dial each.
+	for frame := 0; frame < 2; frame++ {
+		if err := a.pushFrame(context.Background(), frame); err != nil {
+			t.Fatalf("push frame %d: %v", frame, err)
+		}
 	}
-	// Subsequent push: patch the backdrop, then re-select to force a redraw.
-	_ = a.pushFrame(context.Background(), 1)
-	if dev.patches != 1 || dev.lastClockID != 555 || dev.selects != 2 {
-		t.Fatalf("after second push: patches=%d lastClockID=%d selects=%d", dev.patches, dev.lastClockID, dev.selects)
+	if dev.creates != 2 || a.dials != [2]int{555, 556} {
+		t.Fatalf("after the first two pushes: creates=%d dials=%v", dev.creates, a.dials)
+	}
+	if dev.patches != 0 {
+		t.Fatalf("creating a dial also patched it: patches=%d", dev.patches)
+	}
+
+	// From then on each frame patches the dial that is off screen and selects it.
+	for frame := 2; frame < 6; frame++ {
+		if err := a.pushFrame(context.Background(), frame); err != nil {
+			t.Fatalf("push frame %d: %v", frame, err)
+		}
+	}
+	if dev.creates != 2 {
+		t.Fatalf("pinned dials were re-created: creates=%d", dev.creates)
+	}
+	want := []int{555, 556, 555, 556}
+	if !slices.Equal(dev.patchIDs, want) {
+		t.Errorf("patched dials = %v, want %v", dev.patchIDs, want)
+	}
+	if got := dev.selectIDs[2:]; !slices.Equal(got, want) {
+		t.Errorf("selected dials = %v, want %v", got, want)
+	}
+}
+
+// The Times Frame ignores a select of the dial already on screen, so two
+// consecutive frames must never land on the same dial — that is what froze the
+// display on its first page.
+func TestPushFrameNeverSelectsTheSameDialTwice(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24, ClockID: 555, ClockIDAlt: 556}}
+	dev := &fakeDevice{}
+	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
+
+	for frame := 0; frame < 8; frame++ {
+		if err := a.pushFrame(context.Background(), frame); err != nil {
+			t.Fatalf("push frame %d: %v", frame, err)
+		}
+	}
+	if dev.creates != 0 {
+		t.Fatalf("pinned dials were re-created: creates=%d", dev.creates)
+	}
+	for i := 1; i < len(dev.selectIDs); i++ {
+		if dev.selectIDs[i] == dev.selectIDs[i-1] {
+			t.Fatalf("frame %d re-selected dial %d, which the device ignores: %v",
+				i, dev.selectIDs[i], dev.selectIDs)
+		}
+	}
+	// Every frame reaches the screen: the dial selected is the one just written.
+	if !slices.Equal(dev.patchIDs, dev.selectIDs) {
+		t.Errorf("patched %v but selected %v, want the same dial each frame", dev.patchIDs, dev.selectIDs)
 	}
 }
 
@@ -236,7 +288,7 @@ func TestFrameRecoveryPowerCyclesDisplay(t *testing.T) {
 	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24}}
 	dev := &fakeDevice{failPatchTimes: 1_000_000} // every background push fails
 	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
-	a.clockID = 555 // pinned dial: skip the create path
+	a.dials = [2]int{555, 556} // pinned dials: skip the create path
 	a.recoverAfter = 3
 	a.recoverPause = time.Millisecond
 
@@ -268,7 +320,7 @@ func TestFrameRecoveryResetsOnSuccess(t *testing.T) {
 	cfg := config.Config{Device: config.Device{Timeout: time.Second, ClockFont: 24}}
 	dev := &fakeDevice{failPatchTimes: 2} // fail twice, then push succeeds
 	a := New(cfg, testLogger(), Deps{Renderer: fakeRenderer{}, Device: dev})
-	a.clockID = 555
+	a.dials = [2]int{555, 556}
 	a.recoverAfter = 3
 	a.recoverPause = time.Millisecond
 

@@ -70,11 +70,16 @@ type AmbientPoint struct {
 
 // Device holds Divoom LAN connection settings.
 type Device struct {
-	Host      string
-	Port      int
-	Timeout   time.Duration
-	ClockID   int // 0 = create a new local clock on startup
-	ClockFont int // device font id for the native disp 4 clock layer
+	Host    string
+	Port    int
+	Timeout time.Duration
+	// ClockID and ClockIDAlt are the two dials the frame loop alternates
+	// between: the firmware only redraws the backdrop when a select names a
+	// different dial than the one on screen, so a single dial freezes on its
+	// first page. Either being 0 makes the service create that dial on startup.
+	ClockID    int
+	ClockIDAlt int
+	ClockFont  int // device font id for the native disp 4 clock layer
 }
 
 // Freedom holds Tradernet session credentials and the instrument symbols.
@@ -191,11 +196,12 @@ func Load() (Config, error) {
 
 	c := Config{
 		Device: Device{
-			Host:      env("DIVOOM_DEVICE_HOST", "192.168.178.40"),
-			Port:      geti("DIVOOM_DEVICE_PORT", 9000),
-			Timeout:   time.Duration(geti("DIVOOM_TIMEOUT_MS", 45000)) * time.Millisecond,
-			ClockID:   geti("DIVOOM_CLOCK_ID", 0),
-			ClockFont: geti("DIVOOM_CLOCK_FONT", 24),
+			Host:       env("DIVOOM_DEVICE_HOST", "192.168.178.40"),
+			Port:       geti("DIVOOM_DEVICE_PORT", 9000),
+			Timeout:    time.Duration(geti("DIVOOM_TIMEOUT_MS", 45000)) * time.Millisecond,
+			ClockID:    geti("DIVOOM_CLOCK_ID", 0),
+			ClockIDAlt: geti("DIVOOM_CLOCK_ID_B", 0),
+			ClockFont:  geti("DIVOOM_CLOCK_FONT", 24),
 		},
 		Freedom: Freedom{
 			APIURL:      env("FREEDOM_API_URL", "https://tradernet.com/api"),

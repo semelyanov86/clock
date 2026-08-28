@@ -257,6 +257,14 @@ func pushOnce(ctx context.Context, cfg config.Config, log *slog.Logger, dev app.
 		if err := dev.PatchDialBg(ctx, cfg.Device.ClockID, jpeg); err != nil {
 			return err
 		}
+		// Selecting the dial already on screen is a no-op on the Times Frame, so a
+		// one-shot push has to bounce through the second dial to force the redraw.
+		// The service loop gets this for free by alternating between the two.
+		if cfg.Device.ClockIDAlt > 0 {
+			if err := dev.SetClockSelect(ctx, cfg.Device.ClockIDAlt); err != nil {
+				log.Warn("bounce via second dial", "clockId", cfg.Device.ClockIDAlt, "err", err)
+			}
+		}
 		return dev.SetClockSelect(ctx, cfg.Device.ClockID)
 	}
 	id, err := dev.CreateLocalClock(ctx, "Clock Dashboard", app.ClockItems(cfg.Device.ClockFont), []string{"time_main"}, jpeg)

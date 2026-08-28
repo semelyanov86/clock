@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -86,11 +87,19 @@ type Deps struct {
 
 // App is the running service.
 type App struct {
-	cfg     config.Config
-	log     *slog.Logger
-	deps    Deps
-	store   *store
-	clockID int
+	cfg   config.Config
+	log   *slog.Logger
+	deps  Deps
+	store *store
+
+	// dials are the two identical dials the frame loop alternates between. The
+	// Times Frame redraws the backdrop only when Channel/SetClockSelectId names a
+	// dial other than the one on screen: pushing every frame to the same id
+	// leaves the display frozen on whatever page it booted with, even though the
+	// device stores each new background. Alternating makes every select a real
+	// switch, and the dial being switched to already carries the fresh frame, so
+	// no stale or foreign page is ever shown. A 0 slot is created on first use.
+	dials [2]int
 
 	// Scheduled-write retry policy (brightness, ambient light). Overridable in
 	// tests; the night-time WireGuard tunnel can briefly drop, and a scheduled
@@ -123,7 +132,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 		log:               log,
 		deps:              deps,
 		store:             newStore(),
-		clockID:           cfg.Device.ClockID,
+		dials:             [2]int{cfg.Device.ClockID, cfg.Device.ClockIDAlt},
 		retryInitial:      30 * time.Second,
 		retryMax:          2 * time.Minute,
 		retryDeadline:     10 * time.Minute,
@@ -152,18 +161,9 @@ func (a *App) Run(ctx context.Context) error {
 	go a.runBrightnessSchedule(ctx)
 	go a.runAmbientSchedule(ctx)
 
-	// Bring the dashboard to the foreground. The create path selects a freshly
-	// created dial; a pre-pinned DIVOOM_CLOCK_ID is otherwise only background-
-	// replaced (which does not change what is displayed), so select it once here
-	// in case the device drifted to another clock.
-	if a.clockID != 0 {
-		sctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
-		if err := a.deps.Device.SetClockSelect(sctx, a.clockID); err != nil {
-			a.log.Warn("select configured clock", "clockId", a.clockID, "err", err)
-		}
-		cancel()
-	}
-
+	// No startup select is needed: every frame ends in a select of the dial it
+	// just wrote, which also brings the dashboard back if the device drifted to
+	// another clock.
 	ticker := time.NewTicker(a.cfg.Intervals.Frame)
 	defer ticker.Stop()
 
@@ -245,30 +245,49 @@ func (a *App) pushFrame(ctx context.Context, frame int) error {
 	pctx, cancel := context.WithTimeout(ctx, a.cfg.Device.Timeout)
 	defer cancel()
 
-	if a.clockID == 0 {
-		id, err := a.deps.Device.CreateLocalClock(pctx, "Clock Dashboard", a.clockItems(), []string{"time_main"}, jpeg)
-		if err != nil {
-			a.log.Error("create local clock", "err", err)
-			return err
-		}
-		a.clockID = id
-		a.log.Info("created local clock", "clockId", id, "hint", "pin it via DIVOOM_CLOCK_ID to reuse across restarts")
-		if err := a.deps.Device.SetClockSelect(pctx, id); err != nil {
-			a.log.Warn("select clock", "clockId", id, "err", err)
-			return err
-		}
-		return nil
+	slot := frame % len(a.dials)
+	if a.dials[slot] == 0 {
+		return a.createDial(pctx, slot, jpeg)
 	}
+	id := a.dials[slot]
 
-	// Patch the stored backdrop, then re-select the dial so the device redraws
-	// it. On the Times Frame ReplaceDialBg only updates a cache that is not shown
-	// live, so the displayed page would never change without this.
-	if err := a.deps.Device.PatchDialBg(pctx, a.clockID, jpeg); err != nil {
-		a.log.Warn("patch background", "clockId", a.clockID, "frame", frame, "err", err)
+	// Write the frame into the dial that is currently off screen, then select it.
+	// ReplaceDialBg only updates a cache the Times Frame never displays, and a
+	// select of the dial already on screen is a no-op, so this alternation is what
+	// actually puts a new page in front of the user.
+	if err := a.deps.Device.PatchDialBg(pctx, id, jpeg); err != nil {
+		a.log.Warn("patch background", "clockId", id, "frame", frame, "err", err)
 		return err
 	}
-	if err := a.deps.Device.SetClockSelect(pctx, a.clockID); err != nil {
-		a.log.Warn("refresh dial", "clockId", a.clockID, "frame", frame, "err", err)
+	if err := a.deps.Device.SetClockSelect(pctx, id); err != nil {
+		a.log.Warn("refresh dial", "clockId", id, "frame", frame, "err", err)
+		return err
+	}
+	return nil
+}
+
+// dialEnv names the variable that pins each dial slot across restarts.
+var dialEnv = [2]string{"DIVOOM_CLOCK_ID", "DIVOOM_CLOCK_ID_B"}
+
+// createDial creates the dial for one buffer slot with the freshly rendered
+// frame as its backdrop and brings it on screen.
+func (a *App) createDial(ctx context.Context, slot int, background []byte) error {
+	name := "Clock Dashboard"
+	if slot > 0 {
+		name = fmt.Sprintf("Clock Dashboard %d", slot+1)
+	}
+
+	id, err := a.deps.Device.CreateLocalClock(ctx, name, a.clockItems(), []string{"time_main"}, background)
+	if err != nil {
+		a.log.Error("create local clock", "name", name, "err", err)
+		return err
+	}
+	a.dials[slot] = id
+	a.log.Info("created local clock", "clockId", id, "name", name,
+		"hint", "pin it via "+dialEnv[slot]+" to reuse across restarts")
+
+	if err := a.deps.Device.SetClockSelect(ctx, id); err != nil {
+		a.log.Warn("select clock", "clockId", id, "err", err)
 		return err
 	}
 	return nil
