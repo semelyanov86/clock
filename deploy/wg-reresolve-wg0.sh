@@ -1,7 +1,7 @@
 #!/bin/sh
 # Re-resolve the wg0 peer endpoint (a MyFRITZ! hostname) so the tunnel follows
-# the home connection's dynamic IPv6 prefix. WireGuard does not re-resolve on
-# its own; the German ISP rotates the prefix roughly daily, which otherwise
+# the home connection's dynamic address. WireGuard does not re-resolve on its
+# own; the German ISP rotates the addresses roughly daily, which otherwise
 # freezes the tunnel (and the clock display) until a manual restart.
 #
 # Install to /usr/local/sbin/wg-reresolve-wg0.sh (root:root, 0755) and drive it
@@ -24,9 +24,19 @@ if [ -z "$PEER" ] || [ -z "$EP" ]; then
 	exit 1
 fi
 
-# Re-set the endpoint from the hostname so wg resolves the current address.
+# Prefer the hostname's IPv4 (A) record. Left to itself, wg picks the AAAA
+# record first, which ties the tunnel to the server's own IPv6 -- after the
+# 2026-10-22 reboot that route broke and the device was unreachable for a day
+# while IPv4 to the same FRITZ!Box handshook in a second. Fall back to the
+# hostname (wg's own resolution) when there is no A record or EP is a literal.
+HOST=${EP%:*}
+PORT=${EP##*:}
+ADDR=$(getent ahostsv4 "$HOST" | awk 'NR == 1 { print $1 }')
+TARGET="$EP"
+[ -n "$ADDR" ] && TARGET="${ADDR}:${PORT}"
+
 # Do not swallow failures: a non-zero exit surfaces in the systemd journal.
-if ! wg set "$IFACE" peer "$PEER" endpoint "$EP"; then
-	echo "wg-reresolve: 'wg set' failed for endpoint $EP" >&2
+if ! wg set "$IFACE" peer "$PEER" endpoint "$TARGET"; then
+	echo "wg-reresolve: 'wg set' failed for endpoint $TARGET ($EP)" >&2
 	exit 1
 fi
