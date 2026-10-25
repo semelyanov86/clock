@@ -524,6 +524,12 @@ curl -s -X POST http://192.168.178.40:9000/divoom_api \
 - Транспорт: HTTPS POST, поле формы `q = JSON.stringify({cmd, SID, params})`. Gateway —
   `https://tradernet.com/api`. **Gateway за Cloudflare:** дефолтный Go `User-Agent` → HTTP 403.
   Клиент ОБЯЗАТЕЛЬНО шлёт браузерный `User-Agent` + `Accept` (иначе всё отбивается 403).
+  ⚠️ **Только IPv4 (2026-10-25).** С 2026-10-02 Cloudflare отбивает 403 **IPv6-адрес Contabo**
+  (`2a02:c207:…`), а IPv4 `79.143.176.198` пропускает (проверено `curl -4`/`-6` с сервера). Go
+  предпочитает IPv6, поэтому почти все запросы (портфель, новости, котировки) три недели падали,
+  изредка проскакивая по IPv4. Клиент дозванивается через `tcp4` (`freedom.ipv4Transport`).
+  Котировки, не пришедшие в частичной пачке, держат последнее значение (`App.lastQuotes`) — раньше
+  строка пропадала (так исчез юань 24.10).
 - `authByLogin` (`viewOnlyMode` из `FREEDOM_VIEW_ONLY`, `rememberMe:1`) → `{"success":true,
   "logged":true,"SID":"…","userId":…}`; **SID в `q` каждого запроса** (cookie-jar тоже держим).
   `userId` из ответа захватывается для `requestedUserId`. Ошибки: `{"error"/"errMsg":…,"code":N}`.

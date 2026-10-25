@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -115,6 +116,11 @@ type App struct {
 	rnd               *rand.Rand
 	lastAmbientEffect int
 
+	// lastQuotes is the latest quote seen per requested symbol, so a symbol
+	// missing from a partial batch keeps its last value instead of vanishing
+	// from the page. Only touched by doMarkets, which never runs concurrently.
+	lastQuotes map[string]model.Instrument
+
 	// Display-recovery policy. After running a background push every frame for
 	// hours, the Times Frame starts rejecting uploads ("dial image upload
 	// failed" / timeouts) until the screen is power-cycled. recoverAfter is the
@@ -140,6 +146,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *App {
 		recoverPause:      3 * time.Second,
 		rnd:               NewRand(),
 		lastAmbientEffect: -1,
+		lastQuotes:        map[string]model.Instrument{},
 	}
 }
 
@@ -593,7 +600,8 @@ func (a *App) doCodex(ctx context.Context) {
 }
 
 // doMarkets fetches all instrument quotes in one batch and splits them into
-// ETFs, Brent, and FX in the configured order.
+// ETFs, Brent, and FX in the configured order. A symbol the batch failed to
+// resolve keeps its previous quote.
 func (a *App) doMarkets(ctx context.Context) {
 	if a.deps.Quotes == nil {
 		return
@@ -608,11 +616,13 @@ func (a *App) doMarkets(ctx context.Context) {
 	}
 	symbols = append(symbols, a.cfg.Freedom.FXSymbols...)
 
-	quotes, err := a.deps.Quotes.Quotes(ctx, symbols)
+	fresh, err := a.deps.Quotes.Quotes(ctx, symbols)
 	if err != nil {
 		a.log.Warn("fetch markets", "err", err)
 		return
 	}
+	maps.Copy(a.lastQuotes, fresh)
+	quotes := a.lastQuotes
 
 	etfs := make([]model.Instrument, 0, len(a.cfg.Freedom.ETFSymbols))
 	for _, sym := range a.cfg.Freedom.ETFSymbols {

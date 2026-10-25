@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -99,7 +100,7 @@ func New(login, password, userID, apiURL string, timeout time.Duration, log *slo
 		password: password,
 		userID:   userID,
 		baseURL:  strings.TrimRight(apiURL, "/"),
-		httpc:    &http.Client{Timeout: timeout, Jar: jar},
+		httpc:    &http.Client{Timeout: timeout, Jar: jar, Transport: ipv4Transport()},
 		log:      log,
 		viewOnly: true, // safe default; WithViewOnly(false) opts into positions
 	}
@@ -107,6 +108,19 @@ func New(login, password, userID, apiURL string, timeout time.Duration, log *slo
 		o(c)
 	}
 	return c, nil
+}
+
+// ipv4Transport returns a transport that reaches the gateway over IPv4 only.
+// Cloudflare in front of Tradernet answers HTTP 403 to the deploy server's IPv6
+// address while its IPv4 address passes, and Go prefers IPv6 whenever both
+// resolve, so nearly every request was rejected.
+func ipv4Transport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	t.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return d.DialContext(ctx, "tcp4", addr)
+	}
+	return t
 }
 
 // call sends a cmd with params, embedding the current SID, and returns the raw

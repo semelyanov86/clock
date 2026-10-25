@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,6 +67,30 @@ func newTestClient(t *testing.T, url string) *Client {
 		t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+// TestIPv4TransportRefusesIPv6 pins the IPv4-only dialer: Cloudflare rejects
+// the deploy server's IPv6 address, so an IPv6 connection must never be made.
+func TestIPv4TransportRefusesIPv6(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	dial := ipv4Transport().DialContext
+	conn, err := dial(t.Context(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial IPv4: %v", err)
+	}
+	_ = conn.Close()
+
+	if conn, err := dial(t.Context(), "tcp", "[::1]:443"); err == nil {
+		_ = conn.Close()
+		t.Fatal("IPv6 address must not be dialled")
+	}
 }
 
 func TestQuotesReturnsPartialBatch(t *testing.T) {

@@ -163,6 +163,54 @@ func TestDoMarketsMapping(t *testing.T) {
 	}
 }
 
+// seqQuotes answers each Quotes call with the next batch in order.
+type seqQuotes struct {
+	batches []map[string]model.Instrument
+	n       int
+}
+
+func (f *seqQuotes) Quotes(context.Context, []string) (map[string]model.Instrument, error) {
+	b := f.batches[f.n]
+	f.n++
+	return b, nil
+}
+
+// TestDoMarketsKeepsLastQuoteForMissingSymbol pins the partial-batch merge: a
+// symbol the gateway failed to resolve keeps its previous quote instead of
+// dropping out of the page (the yuan vanished this way).
+func TestDoMarketsKeepsLastQuoteForMissingSymbol(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Device:  config.Device{Timeout: time.Second},
+		Freedom: config.Freedom{FXSymbols: []string{"EUR/RUR", "USD/RUR", "CNY/RUR"}},
+	}
+	deps := Deps{Quotes: &seqQuotes{batches: []map[string]model.Instrument{
+		{
+			"EUR/RUR": {Last: 98},
+			"USD/RUR": {Last: 91},
+			"CNY/RUR": {Last: 12.5},
+		},
+		{
+			"EUR/RUR": {Last: 99},
+			"USD/RUR": {Last: 92},
+		},
+	}}}
+	a := New(cfg, testLogger(), deps)
+	a.doMarkets(context.Background())
+	a.doMarkets(context.Background())
+
+	fx := a.Snapshot(time.Now()).FX
+	if len(fx) != 3 {
+		t.Fatalf("FX = %+v, want all three pairs", fx)
+	}
+	if fx[0].Last != 99 || fx[1].Last != 92 {
+		t.Errorf("resolved pairs not refreshed: %+v", fx[:2])
+	}
+	if fx[2].Symbol != "CNY/RUB" || fx[2].Last != 12.5 {
+		t.Errorf("missing pair = %+v, want last CNY/RUB quote 12.5", fx[2])
+	}
+}
+
 func TestDoUsageSourcesRemainIndependent(t *testing.T) {
 	t.Parallel()
 
